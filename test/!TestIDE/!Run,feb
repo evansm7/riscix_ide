@@ -1,0 +1,6 @@
+if "<System$Path>" = "" then Error 0 System resources cannot be found
+
+RMEnsure SharedCLibrary 4.00 RMLoad System:Modules.CLib
+RMEnsure SharedCLibrary 4.00 Error You need SharedCLibrary 4.00 or later
+
+<Obey$Dir>.!RunImage

@@ -1,0 +1,75 @@
+*** conf/conf.c-orig
+--- conf/conf.c
+262a263,281
+> /* Expansion card IDE driver */
+> #if NIDE > 0
+> int ecide_open(), ecide_ropen(), ecide_close(), ecide_rclose(), ecide_strategy(),
+>         ecide_read(), ecide_write(), ecide_ioctl(), ecide_dump(),
+>         ecide_reset(), ecide_size(), ecide_secsize();
+> #else
+> #define	ecide_open	nodev
+> #define ecide_ropen     nodev
+> #define	ecide_close	nodev
+> #define	ecide_rclose	nodev
+> #define	ecide_strategy	nodev
+> #define	ecide_read	nodev
+> #define	ecide_write	nodev
+> #define	ecide_ioctl	nodev
+> #define	ecide_dump	0
+> #define	ecide_size	0
+> #define	ecide_secsize	nodev
+> #endif
+> 
+318c337
+< 
+---
+>         { ecide_open, ecide_close, ecide_strategy, ecide_dump, ecide_size, 0, "id", 3 }, /* 40 */
+722a742
+>         /* FIXME: ecide as char dev! */
+*** conf/xcbconf.c-orig
+--- conf/xcbconf.c
+126a127,134
+> #if NIDE > 0
+> extern void ecide_init_zidefs(), ecide_init_castle();
+> extern void ecide_init_low(), ecide_shutdown();
+> extern struct scavenge ecide_scavenge;
+> #define XCB_COMPANY_CASTLE      85
+> #define XCB_PRODUCT_IDE_EURO16  231
+> #endif
+> 
+163a172,180
+> #endif
+> #if NIDE > 0
+>   /* ICS/IanS IDE podule with ZIDEFS rom */
+>   { { XCB_PRODUCT_ICSIDEEXPANSION, XCB_COMPANY_ACORNUK, 0xff },
+>     0, ecide_init_zidefs, ecide_init_low, ecide_shutdown, 0 /* &ecide_scavenge */ },
+>   /* Note the original ICS podule ROM uses XCB_COMPANY_IANCOPESTAKESOFTWARE & XCB_COUNTRY_UK */
+>   { { XCB_PRODUCT_IDE_EURO16, XCB_COMPANY_CASTLE, XCB_COUNTRY_UK },
+>     0, ecide_init_zidefs, ecide_init_low, ecide_shutdown, 0 /* &ecide_scavenge */ },
+>   /* Can't scavenge unless every podule sharing that code doesn't probe! */
+*** M/Makefile-orig
+--- M/Makefile
+237a238,241
+> 	ecide.o \
+> 	ecide_io.o \
+> 	ecide_io_asm.o \
+> 	ecide_parts.o \
+250,251d253
+< 	$S/iecd.o \
+< 	$S/iecs.o \
+309c311
+< 	@$S/compileversion ${SPECIAL_NUMBER} '${CC}' "RISC iX%s test kernel"
+---
+> 	@$S/compileversion ${SPECIAL_NUMBER} '${CC}' "RISC iX%s ME ecide kernel"
+518a521,525
+> 
+> ecide.o: 		; ${CC} -c ${CFLAGS} -I../dev/ecide -o $@ ../dev/ecide/ecide.c
+> ecide_io.o: 		; ${CC} -c ${CFLAGS} -I../dev/ecide -o $@ ../dev/ecide/ecide_io.c
+> ecide_io_asm.o:		; ${CC} -c ${CFLAGS} -I../dev/ecide -o $@ ../dev/ecide/ecide_io_asm.s
+> ecide_parts.o:		; ${CC} -c ${CFLAGS} -I../dev/ecide -o $@ ../dev/ecide/ecide_parts.c
+*** conf/Mdevconf.h-orig
+--- conf/Mdevconf.h
+73a74,76
+> /* ME: Expansion card IDE */
+> #define NIDE    1
+> 
