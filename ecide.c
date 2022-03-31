@@ -1,10 +1,13 @@
-/* file: iecd.c */
+/* file: ecide.c */
 
 /*
- * Driver for Imaginary Expansion Card - Disc
+ * Driver for Expansion Card IDE
+ *
+ * Based heavily on iecd.{c,h} which are:
  *
  * Copyright (C) 1989,1991 Acorn Computers Ltd.
  *
+ * And ME!
  */
 
 
@@ -36,7 +39,8 @@
 #include <arm/drivers.h>
 
 /* finally the include file defining our own device */
-#include "iecd.h"
+#include "ecide.h"
+#include "ecide_io.h"
 
 /*
  * Memory scavenging support.  If no expansion card for this device is
@@ -59,8 +63,8 @@
  * {code,data}_end declarations (see end of file).
  */
 
-static char iecd_data_base[] = "iecd";
-static int iecd_code_base() { return 1; }
+static char ecide_data_base[] = "ecide";
+static int ecide_code_base() { return 1; }
 
 /*
  * For each card in the machine, add some raw I/O buffers.
@@ -69,12 +73,12 @@ static int iecd_code_base() { return 1; }
 #define RBUFS_PER_CARD	2
 
 /*
- * Maximum number of drives (1 per card) we will handle -
+ * Maximum number of drives (2 per card) we will handle -
  * since the control structures are dynamically allocated,
  * there is very little space wasted in providing support
  * for the theoretical maximum of four cards.
  */
-#define MAX_DRIVE       4
+#define MAX_DRIVE       8
 
 /*
  * The following contains the actual number of drives present,
@@ -89,10 +93,14 @@ static int n_drive;
 
 /* macros for handling minor device number */
 
-#define DRIVENO(mindev) ((mindev) >> 3)
+#define CTRLRNO(mindev) ((mindev) >> 4)
+#define DRIVENO(mindev) (((mindev) >> 3) & 1)
 #define PARTNO(mindev)  ((mindev) & 7)
 #define MAX_PART        8
 
+static struct ecideregs {
+        unsigned int foo;
+};
 
 static struct drive
 {
@@ -113,7 +121,7 @@ static struct drive
         int p_cyls;             /* how many cylinders in partition */
         int p_rdonly;           /* partition access flag */
     } d_part[MAX_PART];
-    struct iecdregs *d_regs;    /* address of drive controller regs */
+    struct ecideregs *d_regs;    /* address of drive controller regs */
     unsigned char d_slot;       /* physical expansion card slot */
     unsigned char d_cmd;        /* operation drive is currently doing */
     long *d_mem;                /* memory address for data transfer */
@@ -125,6 +133,8 @@ static struct drive
     struct devqueue d_ioq;      /* header record for I/O operations queue */
     struct int_hndlr d_ih;	/* interrupt handling control */
 } *drive_info[MAX_DRIVE];
+
+static ide_host_t       ide_host[2];
 
 #define MAX_RETRIES     5       /* number of attempts on an operation */
 
@@ -145,20 +155,20 @@ extern caddr_t permalloc();
 
 /*
  * Free list of raw I/O buffers: initially empty, but
- * added to by iecd_init_hi for each card found.
+ * added to by ecide_init_hi for each card found.
  */
-struct buf *free_raw_buf = NULL;
+static struct buf *free_raw_buf = NULL;
 static int need_raw_buf;
 
 /*
  * Trivial functions to maintain raw I/O buf free list.
  * Note: these are only ever called in foreground
- * process context by iecd_{read,write}(), so there is
+ * process context by ecide_{read,write}(), so there is
  * no need for splbio()/splx() protection: interrupts
  * are not involved (processes in kernel mode are not
  * pre-emptable).
  */
-struct buf *acquire_raw_buf()
+static struct buf *acquire_raw_buf() /* Defined in st506 driver? use that iff it matches? */
 {
     struct buf *bp;
     while (free_raw_buf == NULL)
@@ -171,7 +181,7 @@ struct buf *acquire_raw_buf()
     return bp;
 }
 
-void release_raw_buf (struct buf *bp)
+static void release_raw_buf (struct buf *bp)
 {
     /*
      * First process to release a buffer when there has
@@ -192,20 +202,29 @@ void release_raw_buf (struct buf *bp)
 
 /* Expansion Card Bus manager interface code */
 
-void iecd_init_hi (slot)
-  int slot;
+void ecide_init_high(int slot)
 {
     int drive, status, i;
     struct drive *di;
     struct buf *rbp;
+    ide_host_t *ih;
 
-    /* An iecd card has been found in the specified slot */
+    /* An ecide card has been found in the specified slot */
     if (n_drive == MAX_DRIVE)
     {
         /* We have already initialised as many cards as we cope with */
-        printf ("ignoring iecd card in slot %d\n", slot);
+        printf ("ignoring ecide card in slot %d\n", slot);
         return;
     }
+
+    /* ME card probing notes:
+       - card should fill in struct drive for the card itself, and also the drives under it
+       - 2 drives
+       - separated by minor number innit
+       - always use 2 minor (chunks) per card, even if drives not present
+       - 8 chunks total (4 cards, 2 drives per card)
+       So, 4x ide_t with 2x drives within
+     */
 
     /* allocate drive number */
     drive = n_drive++;
@@ -220,7 +239,13 @@ void iecd_init_hi (slot)
     /* set up our structures for the drive */
     di = drive_info[drive];    /* address drive record */
     di->d_slot = slot;          /* record physical slot number */
-    di->d_regs = IECD_REGS(slot); /* calculate card regs address */
+    di->d_regs = ECIDE_REGS(slot); /* calculate card regs address */
+
+    ih = &ide_host[drive/2];
+    ih->regs = (regs_t)ECIDE_SLOT_REGS_BASE(slot) + 0x3000 /* For ICS/IS/ZIDEFS podule! */;
+
+    ide_init(ih);
+
     /*
      * Now do some basic hardware checks on the card/drive interface:
      * these all happen in foreground (we are not allowed to use the
@@ -230,12 +255,12 @@ void iecd_init_hi (slot)
     if ((status = check_drive (drive)) != 0)
     {
         /* The hardware isn't working properly */
-        printf ("iecd%d, slot %d: card failed hardware test, status=%d\n", 
+        printf ("ecide%d, slot %d: card failed hardware test, status=%d\n", 
                 drive, slot, status);
         return;
     }
     /* OK, a working drive - report configuration on the console */
-    printf ("iecd%d: slot %d\n", drive, slot);
+    printf ("ecide%d: slot %d\n", drive, slot);
 
     /*
      * Now we must declare our card's interrupt source to the
@@ -252,7 +277,7 @@ void iecd_init_hi (slot)
      * Ask XCB manager to arrange that the IRQ has normal block I/O
      * device priority.
      */
-    decl_xcb_interrupt (slot, &di->d_ih, PRIO_BIO);
+    /* decl_xcb_interrupt (slot, &di->d_ih, PRIO_BIO); */
 
     /*
      * As a final touch, allocate some raw I/O buffers: for each card
@@ -266,8 +291,7 @@ void iecd_init_hi (slot)
     }
 }
 
-iecd_init_lo (slot, irqs)
-  int slot, irqs;
+ecide_init_low(int slot, int irqs)
 {
     /*
      * This is the low-priority initialisation routine - as it happens
@@ -279,7 +303,7 @@ iecd_init_lo (slot, irqs)
      * impossible, and fatal if tried!  
      * 
      * As documented in "xcb.h", this function will be called twice
-     * for each slot containing an iecd device, once with XCB
+     * for each slot containing an ecide device, once with XCB
      * interrupts disabled (marked by irqs == 0), and the second time
      * with them enabled (irqs == 1).  On the second call, therefore,
      * we could do some work in conjunction with our interrupt
@@ -290,28 +314,27 @@ iecd_init_lo (slot, irqs)
 
 
 /*
- * iecd_shutdown arranges that the iecd card in the given slot
+ * ecide_shutdown arranges that the ecide card in the given slot
  * is in a stable, non-interrupting state, as if it had been
  * given a hardware reset.  This is very easy.  Note that we can
  * be called even for cards which have failed their hardware test
  * on initialisation... beware.
  */
-iecd_shutdown (slot)
+ecide_shutdown (slot)
   int slot;
 {
     /* The following should be sufficient in our case... */
-    struct iecdregs *regs = IECD_REGS(slot);
+/*    struct ecideregs *regs = ECIDE_REGS(slot); */
     /*
      * The controller reset command clears everything to 
      * a suitable state.
      */
-    write_reg (regs->c_command, CMD_RESET);
 }
 
 
 /* Main block device interface follows */
 
-int iecd_open (dev, flag)
+int ecide_open (dev, flag)
   dev_t dev;
   int flag;
 {
@@ -391,7 +414,7 @@ int iecd_open (dev, flag)
     return 0;
 }
 
-int iecd_close (dev, flag)
+int ecide_close (dev, flag)
   dev_t dev;
   int flag;
 {
@@ -401,9 +424,9 @@ int iecd_close (dev, flag)
 
 
 /*
- * iecd_strategy - where I/O requests are processed.
+ * ecide_strategy - where I/O requests are processed.
  */
-iecd_strategy (bp)
+ecide_strategy (bp)
   struct buf *bp;
 {
     int mindev = minor(bp->b_dev);
@@ -430,7 +453,7 @@ iecd_strategy (bp)
     }
 
     /* work out size of partition in system device block units */
-    nblks = pt->p_cyls * BLKS_PER_CYL;
+    nblks = pt->p_cyls * 100; /*BLKS_PER_CYL;*/
 
     /* check for transfer outside partition bounds */
     if (bp->b_blkno + (bp->b_bcount / DEV_BSIZE) > nblks)
@@ -492,8 +515,8 @@ iecd_strategy (bp)
 }
 
 
-/* iecd_size returns the size of the specified device */
-int iecd_size (dev)
+/* ecide_size returns the size of the specified device */
+int ecide_size (dev)
   dev_t dev;
 {
     int mindev = minor(dev);
@@ -513,13 +536,13 @@ int iecd_size (dev)
     if (drive >= MAX_DRIVE || drive_info[drive] == (struct drive *)0)
 	return(-1);
     else
-	return (drive_info[drive]->d_part[PARTNO(mindev)].p_cyls * 
-		BLKS_PER_CYL);
+	return (drive_info[drive]->d_part[PARTNO(mindev)].p_cyls * 100
+		/*BLKS_PER_CYL*/);
 }
 
 
-/* iecd_dump is the normal trivial implementation for now */
-int iecd_dump (dev)
+/* ecide_dump is the normal trivial implementation for now */
+int ecide_dump (dev)
   dev_t dev;
 {
     return ENXIO;
@@ -530,37 +553,24 @@ static void command_drive (di, bp)
   struct drive *di;
   struct buf *bp;
 {
+#if 0
     int mindev = minor(bp->b_dev);
-    struct iecdregs *regs = di->d_regs;
+    struct ecideregs *regs = di->d_regs;
     unsigned int start_block = (bp->b_blkno + 
-                                (di->d_part[PARTNO(mindev)].p_start * 
-                                 BLKS_PER_CYL));
-    unsigned int start_cyl = start_block / BLKS_PER_CYL;
-
+                                (di->d_part[PARTNO(mindev)].p_start * 128
+                                 /* BLKS_PER_CYL */));
+    unsigned int start_cyl = start_block / 128/* BLKS_PER_CYL */;
     /*
      * We must be located on the right cylinder before we start a read
      * or write operation, however access to subsequent cylinders is
      * handled by the controller, since we have set the AUTOSTEP bit
      * in its control register...
      */
-    if (di->d_cur_cyl != start_cyl)
     {
-        /*
-         * We need to do a seek operation.  Tell it where to go - the
-         * SEEK command takes one 16-bit parameter, which is the
-         * target cylinder number (starting at 0) + 1.  Disc drive
-         * controller designers' brains seem to have odd glitches
-         * sometimes....
-         */
-        write_reg (regs->c_param, start_cyl + 1);
-        write_reg (regs->c_command, CMD_SEEK); /* off she goes.. */
         /* remember what we are up to, for the next interrupt */
         di->d_cmd = CMD_SEEK;
         /* and where we are going to... */
         di->d_next_cyl = start_cyl;
-    }
-    else
-    {
         /*
          * We're in the right place, set up for the data transfer.
          * For impenetrable reasons, we have to remind the 
@@ -579,13 +589,14 @@ static void command_drive (di, bp)
          * Note that all the parameters to the controller
          * are offset by one, as for seek.
          */
+#if 0
         write_reg (regs->c_param, start_cyl+1); 
         /*
          * The head (track) and start sector get combined in the second 
          * 16-bit parameter.
          */
         write_reg (regs->c_param, (track+1) << 12 | (sector + 1));
-
+#endif
         /*
          * Third and final parameter is the sector count, which we
          * compute from the transfer byte count.  We record this and
@@ -608,7 +619,7 @@ static void command_drive (di, bp)
          * which we record for testing on the next interrupt.
          */
         di->d_cmd = (bp->b_flags & B_READ) ? CMD_READ : CMD_WRITE;
-        write_reg (regs->c_command, di->d_cmd);
+//        write_reg (regs->c_command, di->d_cmd);
 
         /*
          * Compute which cylinder the last block of the transfer
@@ -617,6 +628,7 @@ static void command_drive (di, bp)
          */
         di->d_last_cyl = (start_block + blocks - 1) / BLKS_PER_CYL;
     }
+#endif
 }
   
 static void start_drive (drive)
@@ -631,18 +643,18 @@ static void start_drive (drive)
 }
 
 /*
- * drive_int is the function called when an iecd drive
+ * drive_int is the function called when an ecide drive
  * controller card interrupts.  We have arranged (in 
- * iecd_init_hi()) that the argument passed in is the 
+ * ecide_init_hi()) that the argument passed in is the 
  * logical drive number concerned.
  */
-static void drive_int (drive)
-  int drive;
+static void drive_int (int drive) /* fixme: IRQ given controller number! */
 {
     struct drive *di = drive_info[drive];
-    struct iecdregs *regs = di->d_regs;
     struct buf *bp;
+/*    struct ecideregs *regs = di->d_regs;
     int status;
+*/
 
     /*
      * Get the head of queue, which is the transfer we are
@@ -652,9 +664,12 @@ static void drive_int (drive)
     if ((bp = di->d_ioq.dq_actf) == NULL)
     {
         /* eh? nothing going on - must be a spurious interrupt */
-        log (LOG_NOTICE, "iecd%d: spurious int\n", drive);
+        log (LOG_NOTICE, "ecide%d: spurious int\n", drive);
         return;                                 /* just ignore it */
     }
+
+    /*********************************************************************************/
+#if 0
         
     /* first get drive status */
     status = read_reg (regs->c_status);
@@ -672,7 +687,7 @@ static void drive_int (drive)
         int code = read_reg (regs->c_data);
         if (++di->d_retries >= MAX_RETRIES)
         {
-            log (LOG_ERR, "iecd%d: drive error %04x\n", drive, code);
+            log (LOG_ERR, "ecide%d: drive error %04x\n", drive, code);
 
             /* move on to the next item in the queue */
             di->d_ioq.dq_actf = bp->av_forw;
@@ -783,7 +798,7 @@ static void drive_int (drive)
 		     * reads are done using separate statements, in
 		     * conjunction with the use of "volatile" in the
 		     * definition of the device register structure
-		     * (see iecd.h).
+		     * (see ecide.h).
 		     *
 		     * If we had instead used something like:
                      *    *data++ = (regs->c_data & 0xFFFF) |
@@ -849,68 +864,19 @@ static void drive_int (drive)
             start_drive (drive);
         }
     }
+#endif
+     /*********************************************************************************/
 }
 
 
 static int check_drive (drive)
   int drive;
 {
-    struct drive *di = drive_info[drive];
-    struct iecdregs *regs = di->d_regs;
+/*    struct drive *di = drive_info[drive];
+    struct ecideregs *regs = di->d_regs;
     int conreg, status;
-
-    /* reset the drive to start with */
-    write_reg (regs->c_command, CMD_RESET);
-
-    /*
-     * Check that the reset has completed OK; wait a little
-     * while first (should finish inside 10uSec normally).
-     */
-    MICRODELAY(50);                             /* wait at least 50 uSec */
-
-    if (read_reg (regs->c_status) & STAT_BUSY)
-        /* oh dear - it should have finished - give up */
-        return 1;                               /* diagnostic code */
-
-    /*
-     * Now check the controller's internals - this should take no 
-     * more than 200 uSec.
-     */
-    write_reg (regs->c_command, CMD_TEST);
-
-    MICRODELAY(1000);                           /* wait a good while */
-    
-    if (read_reg (regs->c_status) & STAT_BUSY)
-        /* oh dear - it didn't finish - give up */
-        return 2;                               /* diagnostic code */
-
-    /* read the command status (1 byte) back from the data register */
-    status = read_reg (regs->c_data) & 0xFF;
-
-    if (status != 0)
-        /* return distinctive diagnostic, including the code we got */
-        return status + 1000;
-
-    /* all seems OK - go ahead now */
-
-    /*
-     * Configure the control register - we use as much of the
-     * controller's "intelligence" as we can, to simplify our
-     * own task.
-     */
-    conreg = CON_TWO_BUFF | CON_ECC | CON_HEADSWITCH | CON_AUTOSTEP;
-
-    /*
-     * If the appropriate link is set on the board (as determined
-     * by reading part of the card's ID space), the attached drive
-     * will permit high-speed seeks, so we use that facility of the 
-     * controller.
-     */
-    if (XCB_ID(di->d_slot)->data[0].d_uchar[0] & 1)
-        conreg |= CON_FASTSEEK;
-
-    /* set the control register up */
-    write_reg (regs->c_control, conreg);
+*/
+    /* reset/probe controller/etc. */
 
     /* all done */
     return 0;
@@ -925,6 +891,11 @@ static int open_drive (drive)
      * table stored at a fixed position on the drive, and do any
      * one-time setting up of the drive.
      */
+        /* FIXME: reset
+         * FIXME: read partition table
+         *      find RISC OS, find offset to RISCiX table
+         * FIXME: somehow update disklabel from partition table
+         */
 }
 
 
@@ -969,11 +940,11 @@ static int iocheck (uio)
 
 
 /*
- * iecd_read processes read requests coming through the
+ * ecide_read processes read requests coming through the
  * raw interface.  Most of the work is done for us by
  * physio().
  */
-int iecd_read (dev, uio)
+int ecide_read (dev, uio)
   dev_t dev;
   struct uio *uio;
 {
@@ -998,7 +969,7 @@ int iecd_read (dev, uio)
      * error code), which we simply pass back to our caller.
      */
     rb = acquire_raw_buf ();
-    status = physio (iecd_strategy, rb, dev, B_READ, minphys, uio);
+    status = physio (ecide_strategy, rb, dev, B_READ, minphys, uio);
     release_raw_buf (rb);
 
     return status;
@@ -1006,10 +977,10 @@ int iecd_read (dev, uio)
 
 
 /*
- * iecd_write is exactly like iecd_read with the exception of the
+ * ecide_write is exactly like ecide_read with the exception of the
  * direction of transfer.
  */
-int iecd_write (dev, uio)
+int ecide_write (dev, uio)
   dev_t dev;
   struct uio *uio;
 {
@@ -1020,14 +991,14 @@ int iecd_write (dev, uio)
         return status;
 
     rb = acquire_raw_buf ();
-    status = physio (iecd_strategy, rb, dev, B_WRITE, minphys, uio);
+    status = physio (ecide_strategy, rb, dev, B_WRITE, minphys, uio);
     release_raw_buf (rb);
 
     return status;
 }
 
 
-int iecd_sectorsize (dev)
+int ecide_sectorsize (dev)
   dev_t dev;
 {
     /* For simplicity, we use DEV_BSIZE as our minimum sector size */
@@ -1038,15 +1009,36 @@ int iecd_sectorsize (dev)
  * Memory scavenging support.  See the comments in <sys/conf.h> for
  * further information.
  */
-static char iecd_data_end[] = { 1 };
-static int iecd_code_end() {  }
+static char ecide_data_end[] = { 1 };
+static int ecide_code_end() {  }
 
-struct scavenge iecd_scavenge =
+struct scavenge ecide_scavenge =
 {
-    iecd_code_base, iecd_code_end,
-    iecd_data_base, iecd_data_end,
-    iecd_open, iecd_open,
+    ecide_code_base, ecide_code_end,
+    ecide_data_base, ecide_data_end,
+    ecide_open, ecide_open,
     NULL
 };
 
-/* EOF iecd.c */
+/* EOF ecide.c */
+
+
+/*
+  Matt misc notes:
+
+  Need to support multiple types of podule, so in xcbconf.c match vendor/product codes and
+  invoke multiple _init_high/low() entry points, specialising on:
+  - IDE register base addresses
+  - IRQ mask/unmask function pointers
+  - Presence of IRQs at all!
+  - 8b/16b data transfer width, and access method
+
+  Also, want to get a callback to probe for A5000/A3020/A4000 onboard IDE.  This'll need some
+  cleverness:
+  - Detect a compatible machine type (might be best done from RISC OS & passed in bootparams)
+  - Find some way to get code executed on boot that is NOT via XCB callbacks
+   -- could binary-patch machdep_init to call init on the driver
+   -- could do some kind of obscene "init on open()" business
+   -- could hijack ist_init (though that's only called for particular machine types, e.g. Arc)
+
+ */
