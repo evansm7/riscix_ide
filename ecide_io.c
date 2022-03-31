@@ -69,47 +69,63 @@ static void     ide_write_data(regs_t regs, unsigned char *src)
 static void ide_copy_string(char *dst, u16 *src, int num_hwords)
 {
         int i;
+        int cidx = 0;
+        /* Cuts out space-padding at end */
+        int last_printable = 0;
         for (i = 0; i < num_hwords; i++) {
                 u16 d = *src++;
-                *dst++ = d >> 8;
-                *dst++ = d & 0xff;
+                dst[cidx] = d >> 8;
+                if (dst[cidx] > ' ')
+                        last_printable = cidx;
+                cidx++;
+                dst[cidx] = d & 0xff;
+                if (dst[cidx] > ' ')
+                        last_printable = cidx;
+                cidx++;
         }
+        if ((last_printable + 1) < num_hwords*2) {
+                dst[last_printable + 1] = 0;
+        }
+        dst[num_hwords*2] = 0;
 }
 
 static void ide_parse_identify(u16 *buff, disc_info_t *disc)
 {
-        char strb[41];
+        char id_strb[41];
+        char fw_strb[9];
         u16 cyl = buff[1];
         u16 heads = buff[3];
         u16 lsplt = buff[6];
         u16 caps = buff[49];
         u32 lba_sectors = buff[60] | (unsigned int)buff[61] << 16;
 
-        ide_copy_string(strb, &buff[27], 40/2);
-        strb[40] = 0;
-        printf("Model ID: %s\n", strb);
-        printf("Logical cyl %d, heads %d, s/trk %d\n",
-               cyl, heads, lsplt);
+        disc->cyl = cyl;
+        disc->heads = heads;
+        disc->sec_per_track = lsplt;
 
-        ide_copy_string(strb, &buff[23], 8/2);
-        strb[8] = 0;
-        printf("Firmware rev: %s\n", strb);
-
-        printf("Capabilities: %04x\n", caps);
         if (caps & (1<<9)) {
-                printf("LBA supported\n");
                 disc->total_sectors = lba_sectors;
                 disc->lba_supported = 1;
+                if (disc->heads != 16 || disc->sec_per_track != 63 ||
+                    disc->total_sectors != cyl*heads*lsplt) {
+                        DBG("*** LBA CHS info mismatch ***\n");
+                        /* Can't trust CHS stuff, try to recreate it. */
+                        disc->heads = 16;
+                        disc->sec_per_track = 63;
+                        disc->cyl = disc->total_sectors/(63*16);
+                }
         } else {
-                printf("LBA not supported\n");
                 disc->total_sectors = cyl*heads*lsplt;
                 disc->lba_supported = 0;
-                disc->cyl = cyl;
-                disc->heads = heads;
-                disc->sec_per_track = lsplt;
         }
-        printf("Total size: %d sectors (%lld bytes)\n", disc->total_sectors,
-               (unsigned long)disc->total_sectors * 512L);
+
+        ide_copy_string(id_strb, &buff[27], 40/2);
+        ide_copy_string(fw_strb, &buff[23], 8/2);
+
+        printf("ecide: Disk ID '%s', %dMB (%ld sectors, CHS %d/%d/%d)\n"
+               "       [revision '%s', caps %04x (%sLBA)]\n",
+               id_strb, disc->total_sectors/2048, disc->total_sectors, cyl, heads, lsplt,
+               fw_strb, caps, disc->lba_supported ? "" : "no ");
 }
 
 /* Reset drives?
