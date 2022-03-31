@@ -41,6 +41,7 @@
 /* finally the include file defining our own device */
 #include "ecide.h"
 #include "ecide_io.h"
+#include "ecide_defs.h"
 
 /*
  * Memory scavenging support.  If no expansion card for this device is
@@ -67,20 +68,6 @@ static char ecide_data_base[] = "ecide";
 static int ecide_code_base() { return 1; }
 
 /*
- * For each card in the machine, add some raw I/O buffers.
- * RBUFS_PER_CARD gives a clearer definition of `some'.
- */
-#define RBUFS_PER_CARD	2
-
-/*
- * Maximum number of drives (2 per card) we will handle -
- * since the control structures are dynamically allocated,
- * there is very little space wasted in providing support
- * for the theoretical maximum of four cards.
- */
-#define MAX_DRIVE       8
-
-/*
  * The following contains the actual number of drives present,
  * up to a limit of MAX_DRIVE - this is determined at boot 
  * time in the expansion card initialisation sequence. 
@@ -90,17 +77,6 @@ static int ecide_code_base() { return 1; }
  * physical slot order).
  */
 static int n_drive;
-
-/* macros for handling minor device number */
-
-#define CTRLRNO(mindev) ((mindev) >> 4)
-#define DRIVENO(mindev) (((mindev) >> 3) & 1)
-#define PARTNO(mindev)  ((mindev) & 7)
-#define MAX_PART        8
-
-static struct ecideregs {
-        unsigned int foo;
-};
 
 static struct drive
 {
@@ -115,13 +91,7 @@ static struct drive
      * partition table for a drive - this is read in on first
      * open of any partition of that drive.
      */
-    struct part
-    {
-        int p_start;            /* first cylinder of partition */
-        int p_cyls;             /* how many cylinders in partition */
-        int p_rdonly;           /* partition access flag */
-    } d_part[MAX_PART];
-    struct ecideregs *d_regs;    /* address of drive controller regs */
+    struct part d_part[MAX_PART];
     unsigned char d_slot;       /* physical expansion card slot */
     unsigned char d_cmd;        /* operation drive is currently doing */
     long *d_mem;                /* memory address for data transfer */
@@ -131,10 +101,10 @@ static struct drive
     int d_last_cyl;             /* head position after a data transfer */
     int d_retries;              /* counts error recovery attempts */
     struct devqueue d_ioq;      /* header record for I/O operations queue */
-    struct int_hndlr d_ih;	/* interrupt handling control */
 } *drive_info[MAX_DRIVE];
 
-static ide_host_t       ide_host[2];
+static int n_card;
+static ide_host_t       ide_card[MAX_CARD];
 
 #define MAX_RETRIES     5       /* number of attempts on an operation */
 
@@ -142,7 +112,6 @@ static ide_host_t       ide_host[2];
  * Various forward references for static (i.e. local) functions 
  * used before they are defined.
  */
-static int check_drive();
 static int open_drive();
 static void start_drive();
 static void drive_int();
@@ -170,146 +139,142 @@ static int need_raw_buf;
  */
 static struct buf *acquire_raw_buf() /* Defined in st506 driver? use that iff it matches? */
 {
-    struct buf *bp;
-    while (free_raw_buf == NULL)
-    {
-	need_raw_buf = 1;
-	sleep ((caddr_t)&need_raw_buf, PRIBIO);
-    }
-    bp = free_raw_buf;
-    free_raw_buf = bp->av_forw;
-    return bp;
+        struct buf *bp;
+        while (free_raw_buf == NULL)
+        {
+                need_raw_buf = 1;
+                sleep ((caddr_t)&need_raw_buf, PRIBIO);
+        }
+        bp = free_raw_buf;
+        free_raw_buf = bp->av_forw;
+        return bp;
 }
 
 static void release_raw_buf (struct buf *bp)
 {
-    /*
-     * First process to release a buffer when there has
-     * been a shortage will awake any process which was
-     * in need.  If more than one, scheduling decides
-     * who gets the buffer (i.e. who runs first after
-     * being woken up).
-     */
-    if (free_raw_buf == NULL && need_raw_buf)
-    {
-	wakeup ((caddr_t)&need_raw_buf);
-	need_raw_buf = 0;
-    }
-    bp->av_forw = free_raw_buf;
-    free_raw_buf = bp;
+        /*
+         * First process to release a buffer when there has
+         * been a shortage will awake any process which was
+         * in need.  If more than one, scheduling decides
+         * who gets the buffer (i.e. who runs first after
+         * being woken up).
+         */
+        if (free_raw_buf == NULL && need_raw_buf)
+        {
+                wakeup ((caddr_t)&need_raw_buf);
+                need_raw_buf = 0;
+        }
+        bp->av_forw = free_raw_buf;
+        free_raw_buf = bp;
 }
-
 
 /* Expansion Card Bus manager interface code */
 
 void ecide_init_high(int slot)
 {
-    int drive, status, i;
-    struct drive *di;
-    struct buf *rbp;
-    ide_host_t *ih;
+        int card;
+        int i;
+        struct buf *rbp;
+        ide_host_t *ih;
 
-    /* An ecide card has been found in the specified slot */
-    if (n_drive == MAX_DRIVE)
-    {
-        /* We have already initialised as many cards as we cope with */
-        printf ("ignoring ecide card in slot %d\n", slot);
-        return;
-    }
+        /* Rules:
+         * This is called with spl high, i.e. no IRQs.  Also no
+         * sleep/wakeup, so busy-wait only.
+         */
 
-    /* ME card probing notes:
-       - card should fill in struct drive for the card itself, and also the drives under it
-       - 2 drives
-       - separated by minor number innit
-       - always use 2 minor (chunks) per card, even if drives not present
-       - 8 chunks total (4 cards, 2 drives per card)
-       So, 4x ide_t with 2x drives within
-     */
+        /* An ecide card has been found in the specified slot */
+        if (n_card == MAX_CARD) {
+                printf("Ignoring ecide card in slot %d\n", slot);
+                return;
+        }
+        card = n_card++;
 
-    /* allocate drive number */
-    drive = n_drive++;
+        /* FIXME: use permalloc for ide_card */
+        ih = &ide_card[card];
+        ih->slot = slot;
+        ih->card_num = card;
+        ih->regs = (regs_t)ECIDE_SLOT_REGS_BASE(slot) + 0x3000 /* For ICS/IS/ZIDEFS podule! */;
+        ih->type = HOST_ZIDEFS; /* FIXME: take from XCB probe type */
 
-    /*
-     * Allocate memory for holding drive record: permalloc() will
-     * return memory cleared to zero.  Note that permalloc either
-     * succeeds or it doesn't return.
-     */
-    drive_info[drive] = (struct drive *)permalloc(sizeof(struct drive));
+        i = ide_init(ih);   /* Probes presence for 2x drives underneath */
 
-    /* set up our structures for the drive */
-    di = drive_info[drive];    /* address drive record */
-    di->d_slot = slot;          /* record physical slot number */
-    di->d_regs = ECIDE_REGS(slot); /* calculate card regs address */
+        /* ME card probing notes:
+           - card should fill in struct drive for the card itself, and also the drives under it
+           - 2 drives
+           - separated by minor number innit
+           - always use 2 minor (chunks) per card, even if drives not present
+           - 8 chunks total (4 cards, 2 drives per card)
+           So, 4x ide_t with 2x drives within
+        */
 
-    ih = &ide_host[drive/2];
-    ih->regs = (regs_t)ECIDE_SLOT_REGS_BASE(slot) + 0x3000 /* For ICS/IS/ZIDEFS podule! */;
+        if (i > 0) {
+                printf("ecide%d: %d drives found, slot %d\n", card, i, slot);
+        } else {
+                printf("ecide%d, slot %d: no drives found\n", card, slot);
+                return;
+        }
 
-    ide_init(ih);
+        /* When the time comes for interrupts, register them as follows: */
+#if 0
+        ih->d_ih.ih_fn = ecide_irq_handler;
+        ih->d_ih.ih_farg = foo_argument;
+        decl_xcb_interrupt(slot, &ih->d_ih, PRIO_BIO); /* Normal BIO priority */
+#endif
 
-    /*
-     * Now do some basic hardware checks on the card/drive interface:
-     * these all happen in foreground (we are not allowed to use the
-     * sleep/wakeup mechanism at this stage - for delays we just loop);
-     * also, interrupts are presently disabled.
-     */
-    if ((status = check_drive (drive)) != 0)
-    {
-        /* The hardware isn't working properly */
-        printf ("ecide%d, slot %d: card failed hardware test, status=%d\n", 
-                drive, slot, status);
-        return;
-    }
-    /* OK, a working drive - report configuration on the console */
-    printf ("ecide%d: slot %d\n", drive, slot);
-
-    /*
-     * Now we must declare our card's interrupt source to the
-     * interrupt system, via the expansion card bus (XCB) manager.  To
-     * do this we initialise the ih_fn and ih_farg fields of the
-     * card's int_hndlr structure (part of the drive record), and pass
-     * its address along with the physical slot number and the desired
-     * IRQ priority to decl_xcb_interrupt().
-     */
-    di->d_ih.ih_fn = drive_int;
-    /* Set logical drive number as arg to be passed to the interrupt handler */
-    di->d_ih.ih_farg = drive; 
-    /*
-     * Ask XCB manager to arrange that the IRQ has normal block I/O
-     * device priority.
-     */
-    /* decl_xcb_interrupt (slot, &di->d_ih, PRIO_BIO); */
-
-    /*
-     * As a final touch, allocate some raw I/O buffers: for each card
-     * found, add some buffers into a local pool used for raw I/O.
-     */
-    rbp = (struct buf *)permalloc (sizeof (struct buf) * RBUFS_PER_CARD);
-    for (i = 0; i < RBUFS_PER_CARD; ++i)
-    {
-	rbp->av_forw = free_raw_buf;
-	free_raw_buf = rbp++;
-    }
+        /*
+         * As a final touch, allocate some raw I/O buffers: for each card
+         * found, add some buffers into a local pool used for raw I/O.
+         */
+        rbp = (struct buf *)permalloc(sizeof (struct buf) * RBUFS_PER_CARD);
+        for (i = 0; i < RBUFS_PER_CARD; ++i) {
+                rbp->av_forw = free_raw_buf;
+                free_raw_buf = rbp++;
+        }
 }
 
 ecide_init_low(int slot, int irqs)
 {
-    /*
-     * This is the low-priority initialisation routine - as it happens
-     * we don't need to do anything here, but we might have chosen to
-     * do things like read partition tables etc off the drive at this
-     * point, rather than as part of the device open sequence.  Note
-     * that the system is not yet running in full multi-processing
-     * context and use of the sleep/wakeup mechanism is therefore
-     * impossible, and fatal if tried!  
-     * 
-     * As documented in "xcb.h", this function will be called twice
-     * for each slot containing an ecide device, once with XCB
-     * interrupts disabled (marked by irqs == 0), and the second time
-     * with them enabled (irqs == 1).  On the second call, therefore,
-     * we could do some work in conjunction with our interrupt
-     * handler, waiting in a polling loop in the main code, if this
-     * were desired.
-     */
+        /*
+         * This is the low-priority initialisation routine - as it happens
+         * we don't need to do anything here, but we might have chosen to
+         * do things like read partition tables etc off the drive at this
+         * point, rather than as part of the device open sequence.  Note
+         * that the system is not yet running in full multi-processing
+         * context and use of the sleep/wakeup mechanism is therefore
+         * impossible, and fatal if tried!
+         *
+         * As documented in "xcb.h", this function will be called twice
+         * for each slot containing an ecide device, once with XCB
+         * interrupts disabled (marked by irqs == 0), and the second time
+         * with them enabled (irqs == 1).  On the second call, therefore,
+         * we could do some work in conjunction with our interrupt
+         * handler, waiting in a polling loop in the main code, if this
+         * were desired.
+         */
+        if (irqs) {
+                int i;
+                ide_host_t *ih = 0;
+
+                /* Find interface for slot: */
+                for (i = 0; i < n_card; i++) {
+                        if (ide_card[i].slot == slot) {
+                                ih = &ide_card[i];
+                                break;
+                        }
+                }
+                if (ih == 0) {
+                        printf("ecide, slot %d: can't find interface!\n", slot);
+                        return;
+                }
+                for (i = 0; i < 2; i++) {
+                        if (ih->drives[i].present)
+                                ide_probe_partitions(ih, i);
+                }
+                for (i = 0; i < 2; i++) {
+                        if (ih->drives[i].present)
+                                ide_dump_partitions(ih, i);
+                }
+        }
 }
 
 
@@ -350,51 +315,6 @@ int ecide_open (dev, flag)
     /* address drive information record */
     di = drive_info[drive];
 
-    /* check for first open of this drive */
-    if ((di->d_flags & DF_OPENED) == 0)
-    {
-        /*
-         * No open has yet completed, but interlock on possible
-         * parallel open attempt, since only one attempt ought
-         * to be made at once, and it is possible that some process
-         * is sleeping in the middle of open_drive();
-         */
-        int s = splbio ();      /* for protection (slight paranoia) */
-        if (di->d_flags & DF_OPENING)
-        {
-            /* someone else trying now - let them do the work */
-            do
-            {
-                di->d_flags |= DF_OPENWAIT;
-                sleep ((caddr_t)di, PRIBIO);
-            } while (di->d_flags & DF_OPENING);
-            /* they have finished: di->d_open_status now set up */
-        }
-        else
-        {
-            int  sleepers;
-            /* mark that we are doing an open of this drive */
-            di->d_flags |= DF_OPENING;
-            /* 
-             * Initialise the drive, read in and validate partition
-             * table, etc; this is performed by a separate function.
-             * During execution of this code we may sleep waiting for
-             * completion.
-             */
-            di->d_open_status = open_drive (drive);
-            /* mark that an open attempt has been made */
-            di->d_flags |= DF_OPENED;
-            /* check whether any other process is waiting for us */
-            sleepers = (di->d_flags & DF_OPENWAIT) != 0;
-            /* clear out the interlock flags */
-            di->d_flags &= ~(DF_OPENING|DF_OPENWAIT);
-            /* wake up anyone who was waiting */
-            if (sleepers)
-                wakeup ((caddr_t)di);
-        }
-        splx (s);
-    }
-
     /* check whether drive has been successfully opened */
     if (di->d_open_status != 0)
         return di->d_open_status; /* no - give up */
@@ -403,7 +323,7 @@ int ecide_open (dev, flag)
     pt = &di->d_part[PARTNO(mindev)];
 
     /* a partition of size 0 is undefined and inaccessible */
-    if (pt->p_cyls == 0)
+    if (pt->p_size == 0)
         return ENXIO;
 
     /* check for read-only flag on partition */
@@ -453,7 +373,7 @@ ecide_strategy (bp)
     }
 
     /* work out size of partition in system device block units */
-    nblks = pt->p_cyls * 100; /*BLKS_PER_CYL;*/
+    nblks = pt->p_size/SECS_PER_BLK;
 
     /* check for transfer outside partition bounds */
     if (bp->b_blkno + (bp->b_bcount / DEV_BSIZE) > nblks)
@@ -516,8 +436,7 @@ ecide_strategy (bp)
 
 
 /* ecide_size returns the size of the specified device */
-int ecide_size (dev)
-  dev_t dev;
+int ecide_size (dev_t dev)
 {
     int mindev = minor(dev);
     int drive = DRIVENO(mindev);
@@ -534,10 +453,9 @@ int ecide_size (dev)
      * our disc.
      */
     if (drive >= MAX_DRIVE || drive_info[drive] == (struct drive *)0)
-	return(-1);
+            return(-1);
     else
-	return (drive_info[drive]->d_part[PARTNO(mindev)].p_cyls * 100
-		/*BLKS_PER_CYL*/);
+            return (drive_info[drive]->d_part[PARTNO(mindev)].p_size/SECS_PER_BLK);
 }
 
 
@@ -869,20 +787,6 @@ static void drive_int (int drive) /* fixme: IRQ given controller number! */
 }
 
 
-static int check_drive (drive)
-  int drive;
-{
-/*    struct drive *di = drive_info[drive];
-    struct ecideregs *regs = di->d_regs;
-    int conreg, status;
-*/
-    /* reset/probe controller/etc. */
-
-    /* all done */
-    return 0;
-}
-
-
 static int open_drive (drive)
   int drive;
 {
@@ -905,8 +809,7 @@ static int open_drive (drive)
  * iocheck ensures that raw I/O transfer requests satisfy
  * certain constraints imposed by the hardware & software.
  */
-static int iocheck (uio)
-  struct uio *uio;
+static int iocheck (struct uio *uio)
 {
     struct iovec *iov;
     int i;

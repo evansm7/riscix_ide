@@ -89,7 +89,7 @@ static void ide_copy_string(char *dst, u16 *src, int num_hwords)
         dst[num_hwords*2] = 0;
 }
 
-static void ide_parse_identify(u16 *buff, disc_info_t *disc)
+static void ide_parse_identify(u16 *buff, drive_info_t *di)
 {
         char id_strb[41];
         char fw_strb[9];
@@ -99,24 +99,24 @@ static void ide_parse_identify(u16 *buff, disc_info_t *disc)
         u16 caps = buff[49];
         u32 lba_sectors = buff[60] | (unsigned int)buff[61] << 16;
 
-        disc->cyl = cyl;
-        disc->heads = heads;
-        disc->sec_per_track = lsplt;
+        di->cyl = cyl;
+        di->heads = heads;
+        di->sec_per_track = lsplt;
 
         if (caps & (1<<9)) {
-                disc->total_sectors = lba_sectors;
-                disc->lba_supported = 1;
-                if (disc->heads != 16 || disc->sec_per_track != 63 ||
-                    disc->total_sectors != cyl*heads*lsplt) {
+                di->total_sectors = lba_sectors;
+                di->lba_supported = 1;
+                if (di->heads != 16 || di->sec_per_track != 63 ||
+                    di->total_sectors != cyl*heads*lsplt) {
                         DBG("*** LBA CHS info mismatch ***\n");
                         /* Can't trust CHS stuff, try to recreate it. */
-                        disc->heads = 16;
-                        disc->sec_per_track = 63;
-                        disc->cyl = disc->total_sectors/(63*16);
+                        di->heads = 16;
+                        di->sec_per_track = 63;
+                        di->cyl = di->total_sectors/(63*16);
                 }
         } else {
-                disc->total_sectors = cyl*heads*lsplt;
-                disc->lba_supported = 0;
+                di->total_sectors = cyl*heads*lsplt;
+                di->lba_supported = 0;
         }
 
         ide_copy_string(id_strb, &buff[27], 40/2);
@@ -124,8 +124,8 @@ static void ide_parse_identify(u16 *buff, disc_info_t *disc)
 
         printf("ecide: Disk ID '%s', %dMB (%ld sectors, CHS %d/%d/%d)\n"
                "       [revision '%s', caps %04x (%sLBA)]\n",
-               id_strb, disc->total_sectors/2048, disc->total_sectors, cyl, heads, lsplt,
-               fw_strb, caps, disc->lba_supported ? "" : "no ");
+               id_strb, di->total_sectors/2048, di->total_sectors, cyl, heads, lsplt,
+               fw_strb, caps, di->lba_supported ? "" : "no ");
 }
 
 /* Reset drives?
@@ -142,19 +142,19 @@ int     ide_init(ide_host_t *ih)
         if (read_reg8(ih->regs, wd_cyl_lo) != 0xaa ||
             read_reg8(ih->regs, wd_cyl_hi) != 0x55) {
                 DBG("ide_init: Can't access regs\n");
-                return 1;
+                return -1;
         }
         /* Now want to probe whether drive 0/1 are present. */
 
         /* OK, do an IDENTIFY on each drive: */
         for (i = 0; i < 2; i++) {
                 int r;
-                ih->discs[i].present = 0;
-                ih->discs[i].lba_supported = 0;
-                ih->discs[i].total_sectors = 0;
-                ih->discs[i].cyl = 0;
-                ih->discs[i].heads = 0;
-                ih->discs[i].sec_per_track = 0;
+                ih->drives[i].present = 0;
+                ih->drives[i].lba_supported = 0;
+                ih->drives[i].total_sectors = 0;
+                ih->drives[i].cyl = 0;
+                ih->drives[i].heads = 0;
+                ih->drives[i].sec_per_track = 0;
 
                 /* Select drive */
                 write_reg8(ih->regs, wd_sdh, DRVHD(i, 0));
@@ -171,29 +171,28 @@ int     ide_init(ide_host_t *ih)
                         DBG("ide_init: Timeout on DRQ for IDENTITY on drive %d\n", i);
                         continue;
                 }
-                ih->discs[i].present = 1;
+                ih->drives[i].present = 1;
                 td++;
                 ide_read_data(ih->regs, ide_id_buffer);
 
-                ide_parse_identify((u16 *)ide_id_buffer, &ih->discs[i]);
+                ide_parse_identify((u16 *)ide_id_buffer, &ih->drives[i]);
         }
-        DBG("ide_init: Found %d discs\n", td);
 
-        return 0;
+        return td;
 }
 
 static void     ide_setup_address(ide_host_t *ih, unsigned int drive, unsigned int sector)
 {
         /* Calculate address... */
-        if (ih->discs[drive].lba_supported) {
+        if (ih->drives[drive].lba_supported) {
                 write_reg8(ih->regs, wd_lba_lo, sector & 0xff);
                 write_reg8(ih->regs, wd_lba_mid, (sector >> 8) & 0xff);
                 write_reg8(ih->regs, wd_lba_hi, (sector >> 16) & 0xff);
                 write_reg8(ih->regs, wd_sdh, DRVBLK_LBA(drive, sector >> 24));
         } else {
-                unsigned int s = (sector % ih->discs[drive].sec_per_track) + 1;
-                unsigned int c = (sector / ih->discs[drive].sec_per_track) / ih->discs[drive].heads;
-                unsigned int h = (sector / ih->discs[drive].sec_per_track) % ih->discs[drive].heads;
+                unsigned int s = (sector % ih->drives[drive].sec_per_track) + 1;
+                unsigned int c = (sector / ih->drives[drive].sec_per_track) / ih->drives[drive].heads;
+                unsigned int h = (sector / ih->drives[drive].sec_per_track) % ih->drives[drive].heads;
                 /* NOTE: Sector starts at one! */
                 write_reg8(ih->regs, wd_sector, s);
                 write_reg8(ih->regs, wd_cyl_lo, c & 0xff);

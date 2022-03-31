@@ -13,8 +13,6 @@
 #ifndef ECIDE_H
 #define ECIDE_H
 
-#define DEBUG
-
 #ifdef DEBUG
 #define DBG     printf
 #else
@@ -29,6 +27,28 @@
  * physical sector size.
  */
 #define SECS_PER_BLK    (DEV_BSIZE/D_SECSIZE)
+
+/*
+ * For each card in the machine, add some raw I/O buffers.
+ * RBUFS_PER_CARD gives a clearer definition of `some'.
+ */
+#define RBUFS_PER_CARD	2
+
+/*
+ * Maximum number of drives (2 per card) we will handle -
+ * since the control structures are dynamically allocated,
+ * there is very little space wasted in providing support
+ * for the theoretical maximum of four cards.
+ */
+#define MAX_DRIVE       8
+#define MAX_CARD        4
+
+/* macros for handling minor device number */
+
+#define CARDNO(mindev) ((mindev) >> 4)
+#define DRIVENO(mindev) (((mindev) >> 3) & 1)
+#define PARTNO(mindev)  ((mindev) & 7)
+#define MAX_PART        8
 
 /*
  * The following gives the address of the disc controller registers

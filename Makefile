@@ -19,6 +19,7 @@ endif
 
 OBJECTS = test_ide.o
 OBJECTS += ecide_io.o
+OBJECTS += ecide_parts.o
 
 TEST_TARGET = IDETest,ff8
 

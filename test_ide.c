@@ -42,7 +42,7 @@ int main(void)
         printf("Hello from C! Probing IDE at %p:\n\n", ide.regs);
 
         r = ide_init(&ide);
-        if (r)
+        if (r < 0)
                 return 1;
 
         printf("\nReading sector 0:\n");
@@ -56,23 +56,33 @@ int main(void)
                         printf("\n");
         }
 
-        printf("\nInverting sector 1:\n");
-        ide_read_one(&ide, 0, 1, buffer);
-        for (i = 0; i < 512/4; i++) {
-                d[i] ^= i + (0xdeadbeef*i);
-        }
-        ide_write_one(&ide, 0, 1, buffer);
+        // Read partition table:
+        if (ide.drives[0].present)
+                ide_probe_partitions(&ide, 0);
+        if (ide.drives[1].present)
+                ide_probe_partitions(&ide, 1);
+        ide_dump_partitions(&ide, 0);
+        ide_dump_partitions(&ide, 1);
 
-        printf("\nReading sector 1:\n");
-        ide_read_one(&ide, 0, 1, buffer);
+        if (0) {
+                printf("\nInverting sector 1:\n");
+                ide_read_one(&ide, 0, 1, buffer);
+                for (i = 0; i < 512/4; i++) {
+                        d[i] ^= i + (0xdeadbeef*i);
+                }
+                ide_write_one(&ide, 0, 1, buffer);
 
-        d = (uint32_t *)buffer;
-        for (i = 0; i < 512/4; i++) {
-                if ((i & 7) == 0)
-                        printf("%02x: ", i);
-                printf("%08x ", d[i]);
-                if ((i & 7) == 7)
-                        printf("\n");
+                printf("\nReading sector 1:\n");
+                ide_read_one(&ide, 0, 1, buffer);
+
+                d = (uint32_t *)buffer;
+                for (i = 0; i < 512/4; i++) {
+                        if ((i & 7) == 0)
+                                printf("%02x: ", i);
+                        printf("%08x ", d[i]);
+                        if ((i & 7) == 7)
+                                printf("\n");
+                }
         }
 
         return 0;
