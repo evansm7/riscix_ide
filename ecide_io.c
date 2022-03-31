@@ -1,6 +1,6 @@
 #include <string.h>
-#if 0
-#include <stdio.h>      /* ifndef kernel! */
+#ifndef _KERNEL
+#include <stdio.h>
 #endif
 #include "types.h"
 #include "ecide.h"
