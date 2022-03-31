@@ -45,7 +45,7 @@
 
 /* macros for handling minor device number */
 
-#define CARDNO(mindev) ((mindev) >> 4)
+#define CARDNO(mindev)  (((mindev) >> 4) & 3)
 #define DRIVENO(mindev) (((mindev) >> 3) & 1)
 #define PARTNO(mindev)  ((mindev) & 7)
 #define MAX_PART        8

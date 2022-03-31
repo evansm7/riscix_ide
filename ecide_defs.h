@@ -40,6 +40,7 @@ typedef struct {
 #ifdef _KERNEL
         struct devqueue         d_ioq;      /* I/O operations queue */
         struct int_hndlr        d_ih;
+        unsigned int            d_retries;
 #endif
 } ide_host_t;
 

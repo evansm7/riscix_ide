@@ -43,6 +43,8 @@
 #include "ecide_io.h"
 #include "ecide_defs.h"
 
+#define PIO_POLLED yes
+
 /*
  * Memory scavenging support.  If no expansion card for this device is
  * found at system boot time, then the XCB manager will attempt to
@@ -68,40 +70,14 @@ static char ecide_data_base[] = "ecide";
 static int ecide_code_base() { return 1; }
 
 /*
- * The following contains the actual number of drives present,
+ * The following contains the actual number of cards present,
  * up to a limit of MAX_DRIVE - this is determined at boot 
  * time in the expansion card initialisation sequence. 
- * Drives are always numbered in the range 0..(n_drive-1),
+ * Drives are always numbered in the range 0..(n_card-1),
  * in the order their controller cards were found in the XCB
  * manager's scan of the expansion card bus (which is done in
  * physical slot order).
  */
-static int n_drive;
-
-static struct drive
-{
-    /* flags for access to the drive */
-    int d_flags;
-    /* values of d_flags bits */
-#define DF_OPENED       (1 << 0)
-#define DF_OPENING      (1 << 1) /* open sequence interlocks */
-#define DF_OPENWAIT     (1 << 2)
-    int d_open_status;
-    /*
-     * partition table for a drive - this is read in on first
-     * open of any partition of that drive.
-     */
-    struct part d_part[MAX_PART];
-    unsigned char d_slot;       /* physical expansion card slot */
-    unsigned char d_cmd;        /* operation drive is currently doing */
-    long *d_mem;                /* memory address for data transfer */
-    int d_sectors;              /* how many sectors remain to be done */
-    int d_cur_cyl;              /* current drive head position */
-    int d_next_cyl;             /* target drive head position (for seek) */
-    int d_last_cyl;             /* head position after a data transfer */
-    int d_retries;              /* counts error recovery attempts */
-    struct devqueue d_ioq;      /* header record for I/O operations queue */
-} *drive_info[MAX_DRIVE];
 
 static int n_card;
 static ide_host_t       ide_card[MAX_CARD];
@@ -112,8 +88,7 @@ static ide_host_t       ide_card[MAX_CARD];
  * Various forward references for static (i.e. local) functions 
  * used before they are defined.
  */
-static int open_drive();
-static void start_drive();
+static void start_drive(ide_host_t *ih);
 static void drive_int();
 
 /*
@@ -232,7 +207,7 @@ void ecide_init_high(int slot)
         }
 }
 
-ecide_init_low(int slot, int irqs)
+int ecide_init_low(int slot, int irqs)
 {
         /*
          * This is the low-priority initialisation routine - as it happens
@@ -264,7 +239,7 @@ ecide_init_low(int slot, int irqs)
                 }
                 if (ih == 0) {
                         printf("ecide, slot %d: can't find interface!\n", slot);
-                        return;
+                        return 0;
                 }
                 for (i = 0; i < 2; i++) {
                         if (ih->drives[i].present)
@@ -275,6 +250,7 @@ ecide_init_low(int slot, int irqs)
                                 ide_dump_partitions(ih, i);
                 }
         }
+        return 0;
 }
 
 
@@ -285,185 +261,229 @@ ecide_init_low(int slot, int irqs)
  * be called even for cards which have failed their hardware test
  * on initialisation... beware.
  */
-ecide_shutdown (slot)
-  int slot;
+void ecide_shutdown (int slot)
 {
-    /* The following should be sufficient in our case... */
-/*    struct ecideregs *regs = ECIDE_REGS(slot); */
-    /*
-     * The controller reset command clears everything to 
-     * a suitable state.
-     */
+        /* FIXME: We can't do a drive reset on all cards (e.g. ZIDEFS card) */
 }
 
 
 /* Main block device interface follows */
 
-int ecide_open (dev, flag)
-  dev_t dev;
-  int flag;
+int ecide_open (dev_t dev, int flag)
 {
-    int mindev = minor(dev);
-    int drive = DRIVENO(mindev);
-    struct drive *di;
-    struct part *pt;
+        int mindev = minor(dev);
+        int drive = DRIVENO(mindev);
+        int card = CARDNO(mindev);
+        ide_host_t *ih;
+        drive_info_t *di;
+        struct part *pt;
 
-    /* check for valid drive number */
-    if (drive >= n_drive)
-        return ENXIO;
+        /* Card & drive valid? */
+        if (card >= n_card || !ide_card[card].drives[drive].present)
+                return ENXIO;
 
-    /* address drive information record */
-    di = drive_info[drive];
+        ih = &ide_card[card];
+        di = &ih->drives[drive];
 
-    /* check whether drive has been successfully opened */
-    if (di->d_open_status != 0)
-        return di->d_open_status; /* no - give up */
+        /* address the relevant partition description */
+        pt = &di->d_part[PARTNO(mindev)];
 
-    /* address the relevant partition description */
-    pt = &di->d_part[PARTNO(mindev)];
+        /* a partition of size 0 is undefined and inaccessible */
+        if (pt->p_size == 0)
+                return ENXIO;
 
-    /* a partition of size 0 is undefined and inaccessible */
-    if (pt->p_size == 0)
-        return ENXIO;
+        /* check for read-only flag on partition */
+        if ((flag & FWRITE) && pt->p_rdonly)
+                return EROFS;
 
-    /* check for read-only flag on partition */
-    if ((flag & FWRITE) && pt->p_rdonly)
-        return EROFS;
-
-    /* all seems to be in order */
-    return 0;
+        /* all seems to be in order */
+        return 0;
 }
 
-int ecide_close (dev, flag)
-  dev_t dev;
-  int flag;
+int ecide_close (dev_t dev, int flag)
 {
-    /* We don't need to do anything special here */
-    return 0;
+        /* We don't need to do anything special here */
+        return 0;
 }
 
+static void ecide_do_immediate(ide_host_t *ih, struct buf *bp)
+{
+        /* Transfer bp->b_bcount/DEV_BSIZE blocks from bp->b_blkno
+         * (within partition given by bp->b_dev) to/from bp->b_un.b_addr
+         */
+        int mindev = minor(bp->b_dev);
+        int drive = DRIVENO(mindev);
+        drive_info_t *di;
+        struct part *pt;
+        unsigned int start_sector;
+        unsigned int total_sectors;
+        unsigned char *start_addr;
+        unsigned int s;
+
+        di = &ih->drives[drive];
+        pt = &di->d_part[PARTNO(mindev)];
+        start_sector = (bp->b_blkno*SECS_PER_BLK) + pt->p_start;
+        total_sectors = (bp->b_bcount / DEV_BSIZE)*SECS_PER_BLK;
+        start_addr = (unsigned char *)bp->b_un.b_addr;
+
+        DBG("ecide_do_immediate(card %d, min %d, dr %d) start %d, total %d, %s\n",
+            ih->card_num, mindev, drive, start_sector, total_sectors,
+            bp->b_flags & B_READ ? "RD" : "WR");
+
+        if (bp->b_flags & B_READ) {
+                for (s = start_sector; s < (start_sector + total_sectors); s++) {
+                        ide_read_one(ih, drive, s, start_addr);
+                        /* FIXME: Any error handling... anything at all! */
+                        start_addr += D_SECSIZE;
+                }
+        } else {
+                for (s = start_sector; s < (start_sector + total_sectors); s++) {
+                        ide_write_one(ih, drive, s, start_addr);
+                        /* FIXME: Error handling! */
+                        start_addr += D_SECSIZE;
+                }
+        }
+}
 
 /*
  * ecide_strategy - where I/O requests are processed.
  */
-ecide_strategy (bp)
-  struct buf *bp;
+int ecide_strategy (struct buf *bp)
 {
-    int mindev = minor(bp->b_dev);
-    int drive = DRIVENO(mindev);
-    struct drive *di;
-    struct part *pt;
-    int nblks, s;
+        int mindev = minor(bp->b_dev);
+        int drive = DRIVENO(mindev);
+        int card = CARDNO(mindev);
+        ide_host_t *ih;
+        drive_info_t *di;
+        struct part *pt;
+        int nblks, s;
 
-    /* Set up for the specific drive and partition involved */
-    di = drive_info[drive];
-    pt = &di->d_part[PARTNO(mindev)];
+        /* Set up for the specific drive and partition involved */
+        ih = &ide_card[card];
+        di = &ih->drives[drive];
+        pt = &di->d_part[PARTNO(mindev)];
 
-    /*
-     * We permit block size-multiple transfers only, starting on
-     * a word boundary in memory.
-     */
-    if (((unsigned int)bp->b_bcount % DEV_BSIZE) != 0 ||
-        ((long)bp->b_un.b_addr & (sizeof(int)-1)) != 0)
-    {
-        bp->b_flags |= B_ERROR; /* flag an error */
-        bp->b_error = EINVAL;   /* set the error code in */
-        bp->b_resid = bp->b_bcount; /* no data moved */
-        biodone (bp);           /* pass buffer back to kernel control */
-    }
-
-    /* work out size of partition in system device block units */
-    nblks = pt->p_size/SECS_PER_BLK;
-
-    /* check for transfer outside partition bounds */
-    if (bp->b_blkno + (bp->b_bcount / DEV_BSIZE) > nblks)
-    {
         /*
-         * don't complain too hard if exactly at end of partition
-         * - this helps read-ahead handling.
+         * We permit block size-multiple transfers only, starting on
+         * a word boundary in memory.
          */
-        if (bp->b_blkno != nblks)
-        {
-            /* quite unacceptable request */
-            bp->b_flags |= B_ERROR;
-            bp->b_error = ENXIO;        /* set the error code in */
+        if (((unsigned int)bp->b_bcount % DEV_BSIZE) != 0 ||
+            ((long)bp->b_un.b_addr & (sizeof(int)-1)) != 0) {
+                bp->b_flags |= B_ERROR; /* flag an error */
+                bp->b_error = EINVAL;   /* set the error code in */
+                bp->b_resid = bp->b_bcount; /* no data moved */
+                biodone (bp);           /* pass buffer back to kernel control */
         }
-        bp->b_resid = bp->b_bcount; /* no data moved */
-        biodone (bp);           /* pass buffer back to kernel control */
-    }
-    /*
-     * Everything seems OK - now queue and possibly start the transfer.
-     *
-     * First we ensure that queue manipulation is not messed up by
-     * interrupts from the controller
-     */
-    s = splbio();
 
-    di->d_ioq.dq_qcnt++;         /* one more item in queue now */
+        /* work out size of partition in system device block units */
+        nblks = pt->p_size/SECS_PER_BLK;
 
-    bp->av_forw = NULL;         /* clear forward link, for queuing */
+        /* check for transfer outside partition bounds */
+        if (bp->b_blkno + (bp->b_bcount / DEV_BSIZE) > nblks) {
+                /*
+                 * don't complain too hard if exactly at end of partition
+                 * - this helps read-ahead handling.
+                 */
+                if (bp->b_blkno != nblks)
+                {
+                        /* quite unacceptable request */
+                        bp->b_flags |= B_ERROR;
+                        bp->b_error = ENXIO;        /* set the error code in */
+                }
+                bp->b_resid = bp->b_bcount; /* no data moved */
+                biodone (bp);           /* pass buffer back to kernel control */
+        }
 
-    if (di->d_ioq.dq_actf == NULL)
-    {
-        /* There was nothing happening: install buffer on empty Q */
-        di->d_ioq.dq_actf = bp;  /* sits at head of queue */
-        di->d_ioq.dq_actl = bp;  /* and also at tail */
+
+#ifdef PIO_POLLED
+        s = splbio();
+        ecide_do_immediate(ih, bp);
+        splx(s);
+        biodone(bp);
+#else
+        /* When we support interrupts, the queue becomes useful! */
+
         /*
-         * Start up the operation, since the controller must be
-         * idle; first set retries on operation to 0.
+         * Everything seems OK - now queue and possibly start the transfer.
+         *
+         * First we ensure that queue manipulation is not messed up by
+         * interrupts from the controller
          */
-        di->d_retries = 0;
-        start_drive (drive);
-    }
-    else
-    {
-        /*
-	 * There is already at least one entry on the queue, which
-	 * will be being processed at the moment.  For simplicity, we
-	 * just place this request at the end of the current queue
-	 * (first come first served ordering).  It might be useful at
-	 * some stage to attempt some sorting on the queue entries.
-	 * On the other hand, the Berkeley Fast File System does most
-	 * of the work for us, meaning that the extra gain from
-	 * sorting is likely to be small.
-	 */
-        di->d_ioq.dq_actl->av_forw = bp;
-        bp->av_back = di->d_ioq.dq_actl;
-        di->d_ioq.dq_actl = bp;
-    }
-    splx (s);                   /* restore SPL */
+        s = splbio();
+
+        ih->d_ioq.dq_qcnt++;         /* one more item in queue now */
+
+        bp->av_forw = NULL;         /* clear forward link, for queuing */
+
+        if (ih->d_ioq.dq_actf == NULL) {
+                /* There was nothing happening: install buffer on empty Q */
+                ih->d_ioq.dq_actf = bp;  /* sits at head of queue */
+                ih->d_ioq.dq_actl = bp;  /* and also at tail */
+                /*
+                 * Start up the operation, since the controller must be
+                 * idle; first set retries on operation to 0.
+                 */
+                ih->d_retries = 0;
+                start_drive (ih);
+        } else {
+                /*
+                 * There is already at least one entry on the queue, which
+                 * will be being processed at the moment.  For simplicity, we
+                 * just place this request at the end of the current queue
+                 * (first come first served ordering).  It might be useful at
+                 * some stage to attempt some sorting on the queue entries.
+                 * On the other hand, the Berkeley Fast File System does most
+                 * of the work for us, meaning that the extra gain from
+                 * sorting is likely to be small.
+                 */
+                ih->d_ioq.dq_actl->av_forw = bp;
+                bp->av_back = ih->d_ioq.dq_actl;
+                ih->d_ioq.dq_actl = bp;
+        }
+        splx (s);                   /* restore SPL */
+#endif
+        return 0;
 }
 
 
 /* ecide_size returns the size of the specified device */
 int ecide_size (dev_t dev)
 {
-    int mindev = minor(dev);
-    int drive = DRIVENO(mindev);
+        int mindev = minor(dev);
+        int drive = DRIVENO(mindev);
+        int card = CARDNO(mindev);
+        ide_host_t *ih;
+        drive_info_t *di;
+        int r;
 
-    /*
-     * Be very careful - under NFS 4.0 it is possible for the size
-     * routine to be called before the device has been opened.  If
-     * this is the case, the only option open is to return -1.
-     *
-     * If device opened, get the size from the appropriate partition
-     * of the appropriate drive, these being determined from the minor
-     * device number.  We return the size in units of DEV_BSIZE: the
-     * macro BLKS_PER_CYL gives the number of these per cylinder on
-     * our disc.
-     */
-    if (drive >= MAX_DRIVE || drive_info[drive] == (struct drive *)0)
-            return(-1);
-    else
-            return (drive_info[drive]->d_part[PARTNO(mindev)].p_size/SECS_PER_BLK);
+        /* Set up for the specific drive and partition involved */
+        ih = &ide_card[card];
+        di = &ih->drives[drive];
+
+        /*
+         * Be very careful - under NFS 4.0 it is possible for the size
+         * routine to be called before the device has been opened.  If
+         * this is the case, the only option open is to return -1.
+         *
+         * If device opened, get the size from the appropriate partition
+         * of the appropriate drive, these being determined from the minor
+         * device number.  We return the size in units of DEV_BSIZE: the
+         * macro BLKS_PER_CYL gives the number of these per cylinder on
+         * our disc.
+         */
+        if (card >= n_card || !ide_card[card].drives[drive].present)
+                r = -1;
+        else
+                r = di->d_part[PARTNO(mindev)].p_size/SECS_PER_BLK;
+        DBG("ecide_size(min %d/dr %d/c %d) = %d\n", mindev, drive, card, r);
+        return r;
 }
 
 
 /* ecide_dump is the normal trivial implementation for now */
-int ecide_dump (dev)
-  dev_t dev;
+int ecide_dump (dev_t dev)
 {
-    return ENXIO;
+        return ENXIO;
 }
 
 
@@ -548,16 +568,14 @@ static void command_drive (di, bp)
     }
 #endif
 }
-  
-static void start_drive (drive)
-  int drive;
+
+static void start_drive(ide_host_t *ih)
 {
-    struct drive *di = drive_info[drive];
-    struct buf *bp;
-    /* see if there is anything on the queue to be processed */
-    if ((bp = di->d_ioq.dq_actf) == NULL)
-        return;                 /* nothing to do */
-    command_drive (di, bp);
+        struct buf *bp;
+        /* see if there is anything on the queue to be processed */
+        if ((bp = ih->d_ioq.dq_actf) == NULL)
+                return;                 /* nothing to do */
+        /* command_drive (di, bp); */
 }
 
 /*
@@ -568,6 +586,7 @@ static void start_drive (drive)
  */
 static void drive_int (int drive) /* fixme: IRQ given controller number! */
 {
+#if 0
     struct drive *di = drive_info[drive];
     struct buf *bp;
 /*    struct ecideregs *regs = di->d_regs;
@@ -587,7 +606,6 @@ static void drive_int (int drive) /* fixme: IRQ given controller number! */
     }
 
     /*********************************************************************************/
-#if 0
         
     /* first get drive status */
     status = read_reg (regs->c_status);
@@ -787,22 +805,6 @@ static void drive_int (int drive) /* fixme: IRQ given controller number! */
 }
 
 
-static int open_drive (drive)
-  int drive;
-{
-    /*
-     * Code here should arrange to read and validate the partition 
-     * table stored at a fixed position on the drive, and do any
-     * one-time setting up of the drive.
-     */
-        /* FIXME: reset
-         * FIXME: read partition table
-         *      find RISC OS, find offset to RISCiX table
-         * FIXME: somehow update disklabel from partition table
-         */
-}
-
-
 /* The remaining code handles raw I/O */
 
 /*
@@ -811,34 +813,34 @@ static int open_drive (drive)
  */
 static int iocheck (struct uio *uio)
 {
-    struct iovec *iov;
-    int i;
-    /*
-     * Raw I/O transfer requests must start on a 512-byte boundary on
-     * the logical disc, since physio() does its computations of block
-     * number on this basis.  The uio_offset field of a uio structure
-     * gives the byte position that the user process has got to on the
-     * associated file-descriptor (by means of previous read, write or
-     * lseek calls) - we use this as the byte offset from the start of
-     * the partition.
-     */
-    if ((uio->uio_offset & (DEV_BSIZE-1)) != 0)
-        return EINVAL;
-    /*
-     * Now, for each segment of the transfer (there may be more than
-     * one, if a process uses the "writev" system call), check that it
-     * is a multiple of 512 bytes in size (since we can only request
-     * whole sectors from the disc) and starts in memory on a whole
-     * word (integer, 4 bytes) boundary, since this is all that our
-     * transfer code will cope with,
-     */
-    iov = uio->uio_iov; 
-    for (i = uio->uio_iovcnt; i > 0; --i, ++iov)
-        if ((iov->iov_len & (DEV_BSIZE-1)) != 0 ||
-            ((int)iov->iov_base & ((sizeof(int))-1)) != 0)
-            return EINVAL;
-    /* No segment failed the test - we can proceed */
-    return 0;
+        struct iovec *iov;
+        int i;
+        /*
+         * Raw I/O transfer requests must start on a 512-byte boundary on
+         * the logical disc, since physio() does its computations of block
+         * number on this basis.  The uio_offset field of a uio structure
+         * gives the byte position that the user process has got to on the
+         * associated file-descriptor (by means of previous read, write or
+         * lseek calls) - we use this as the byte offset from the start of
+         * the partition.
+         */
+        if ((uio->uio_offset & (DEV_BSIZE-1)) != 0)
+                return EINVAL;
+        /*
+         * Now, for each segment of the transfer (there may be more than
+         * one, if a process uses the "writev" system call), check that it
+         * is a multiple of 512 bytes in size (since we can only request
+         * whole sectors from the disc) and starts in memory on a whole
+         * word (integer, 4 bytes) boundary, since this is all that our
+         * transfer code will cope with,
+         */
+        iov = uio->uio_iov; 
+        for (i = uio->uio_iovcnt; i > 0; --i, ++iov)
+                if ((iov->iov_len & (DEV_BSIZE-1)) != 0 ||
+                    ((int)iov->iov_base & ((sizeof(int))-1)) != 0)
+                        return EINVAL;
+        /* No segment failed the test - we can proceed */
+        return 0;
 }
 
 
@@ -847,35 +849,33 @@ static int iocheck (struct uio *uio)
  * raw interface.  Most of the work is done for us by
  * physio().
  */
-int ecide_read (dev, uio)
-  dev_t dev;
-  struct uio *uio;
+int ecide_read (dev_t dev, struct uio *uio)
 {
-    int  status;
-    struct buf *rb;
+        int  status;
+        struct buf *rb;
 
-    if ((status = iocheck (uio)) != 0)
+        if ((status = iocheck (uio)) != 0)
+                return status;
+
+        /*
+         * The routine physio() does all the main work for us, including
+         * organising the user virtual memory to be read into or written
+         * from, ensuring that it is all resident and contiguous in
+         * memory.  It also breaks up large requests into pieces of a size
+         * determined by the routine we pass to it (we use the standard
+         * "minphys", and don't worry about the details).  It calls the
+         * strategy routine we pass to it with the address of the buffer
+         * which it has set up with the details of the transfer or each
+         * part of it.  Physio waits for each part of the transfer to
+         * complete (or an error to occur) before it starts the next part
+         * or returns.  It returns a status value (0 -> success, else
+         * error code), which we simply pass back to our caller.
+         */
+        rb = acquire_raw_buf ();
+        status = physio (ecide_strategy, rb, dev, B_READ, minphys, uio);
+        release_raw_buf (rb);
+
         return status;
-
-    /*
-     * The routine physio() does all the main work for us, including
-     * organising the user virtual memory to be read into or written
-     * from, ensuring that it is all resident and contiguous in
-     * memory.  It also breaks up large requests into pieces of a size
-     * determined by the routine we pass to it (we use the standard
-     * "minphys", and don't worry about the details).  It calls the
-     * strategy routine we pass to it with the address of the buffer
-     * which it has set up with the details of the transfer or each
-     * part of it.  Physio waits for each part of the transfer to
-     * complete (or an error to occur) before it starts the next part
-     * or returns.  It returns a status value (0 -> success, else
-     * error code), which we simply pass back to our caller.
-     */
-    rb = acquire_raw_buf ();
-    status = physio (ecide_strategy, rb, dev, B_READ, minphys, uio);
-    release_raw_buf (rb);
-
-    return status;
 }
 
 
@@ -883,29 +883,26 @@ int ecide_read (dev, uio)
  * ecide_write is exactly like ecide_read with the exception of the
  * direction of transfer.
  */
-int ecide_write (dev, uio)
-  dev_t dev;
-  struct uio *uio;
+int ecide_write (dev_t dev, struct uio *uio)
 {
-    int  status;
-    struct buf *rb;
+        int  status;
+        struct buf *rb;
 
-    if ((status = iocheck (uio)) != 0)
+        if ((status = iocheck (uio)) != 0)
+                return status;
+
+        rb = acquire_raw_buf ();
+        status = physio (ecide_strategy, rb, dev, B_WRITE, minphys, uio);
+        release_raw_buf (rb);
+
         return status;
-
-    rb = acquire_raw_buf ();
-    status = physio (ecide_strategy, rb, dev, B_WRITE, minphys, uio);
-    release_raw_buf (rb);
-
-    return status;
 }
 
 
-int ecide_sectorsize (dev)
-  dev_t dev;
+int ecide_sectorsize (dev_t dev)
 {
-    /* For simplicity, we use DEV_BSIZE as our minimum sector size */
-    return DEV_BSIZE;
+        /* For simplicity, we use DEV_BSIZE as our minimum sector size */
+        return DEV_BSIZE;
 }
 
 /*
@@ -917,10 +914,10 @@ static int ecide_code_end() {  }
 
 struct scavenge ecide_scavenge =
 {
-    ecide_code_base, ecide_code_end,
-    ecide_data_base, ecide_data_end,
-    ecide_open, ecide_open,
-    NULL
+        ecide_code_base, ecide_code_end,
+        ecide_data_base, ecide_data_end,
+        ecide_open, ecide_open,
+        NULL
 };
 
 /* EOF ecide.c */
