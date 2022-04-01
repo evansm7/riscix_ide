@@ -204,7 +204,7 @@ void    ide_dump_partitions(ide_host_t *ih, unsigned int drive)
         printf("ecide%d: Partitions on drive %d:\n", ih->card_num, drive);
         for (p = 0; p < MAX_PART; p++) {
                 if (ih->drives[drive].d_part[p].p_size) {
-                        printf("%d:  %d-%d (size %d) %s\n", p,
+                        printf("  %d:  %d-%d (size %d) %s\n", p,
                                ih->drives[drive].d_part[p].p_start,
                                ih->drives[drive].d_part[p].p_start +
                                ih->drives[drive].d_part[p].p_size,
