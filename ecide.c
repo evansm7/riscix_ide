@@ -269,7 +269,7 @@ void ecide_shutdown (int slot)
 
 /* Main block device interface follows */
 
-int ecide_open (dev_t dev, int flag)
+int ecide_open(dev_t dev, int flag)
 {
         int mindev = minor(dev);
         int drive = DRIVENO(mindev);
@@ -332,13 +332,11 @@ static void ecide_do_immediate(ide_host_t *ih, struct buf *bp)
             bp->b_flags & B_READ ? "RD" : "WR");
 #endif
         r = 0;
+        s = 0;
         if (bp->b_flags & B_READ) {
-                for (s = start_sector; s < (start_sector + total_sectors); s++) {
-                        r = ide_read_one(ih, drive, s, start_addr);
-                        if (r)
-                                goto err;
-                        start_addr += D_SECSIZE;
-                }
+                r = ide_read_some(ih, drive, start_sector, total_sectors, start_addr);
+                if (r)
+                        goto err;
         } else {
                 for (s = start_sector; s < (start_sector + total_sectors); s++) {
                         r = ide_write_one(ih, drive, s, start_addr);
