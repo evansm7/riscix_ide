@@ -75,6 +75,10 @@ int     ide_wait_drq(regs_t regs)
         return -1;
 }
 
+extern void     ide_read_data(regs_t regs, unsigned char *dest);
+extern void     ide_write_data(regs_t regs, unsigned char *src);
+
+#ifdef GENERIC_C_PIO_TRANSFERS
 /* Read a sector-sized chunk (512B) */
 static void     ide_read_data(regs_t regs, unsigned char *dest)
 {
@@ -99,6 +103,7 @@ static void     ide_write_data(regs_t regs, unsigned char *src)
                 write_reg16(regs, wd_data, (w >> 16));
         }
 }
+#endif
 
 static void ide_copy_string(char *dst, u16 *src, int num_hwords)
 {

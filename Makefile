@@ -19,6 +19,7 @@ endif
 
 OBJECTS = test_ide.o
 OBJECTS += ecide_io.o
+OBJECTS += ecide_io_asm.o
 OBJECTS += ecide_parts.o
 
 TEST_TARGET = IDETest,ff8
@@ -29,6 +30,9 @@ $(TEST_TARGET):	$(OBJECTS)
 	$(ACC) $(ACFLAGS) $(ACLINKFLAGS) $^ -o $@
 
 %.o:	%.S
+	$(ACC) $(ACFLAGS) -c $^ -o $@
+
+%.o:	%.s
 	$(ACC) $(ACFLAGS) -c $^ -o $@
 
 %.o:	%.c
