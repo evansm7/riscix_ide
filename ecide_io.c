@@ -313,31 +313,65 @@ int     ide_read_one(ide_host_t *ih, unsigned int drive,
         return ide_read_some(ih, drive, sector, 1, dest);
 }
 
-int     ide_write_one(ide_host_t *ih, unsigned int drive,
-                      unsigned int sector, unsigned char *src)
+int     ide_write_some(ide_host_t *ih, unsigned int drive,
+                       unsigned int sector, unsigned int count,
+                       unsigned char *src)
 {
         int r;
+        unsigned int done_sectors;
+        unsigned int sectors_this_time;
+        unsigned int s;
+
         ide_select_drive(ih, drive);
         if (ide_wait_nbsy(ih->regs)) {
-                DBG("ide_write_one: Timeout on nbusy\n");
+                DBG("ide_write_some: Timeout on nbusy\n");
                 return 1;
         }
 
         write_reg8(ih->regs, wd_precomp, 0);
-        write_reg8(ih->regs, wd_seccnt, 1);         /* Bigger blocks later */
-        ide_setup_address(ih, drive, sector);
 
-        write_reg8(ih->regs, wd_command, WDCC_WRITE);
-
-        r = ide_wait_drq(ih->regs);
-        if (r != 0) {
-                if (r < 0)
-                        DBG("ide_write_one: Timeout on DRQ\n");
+#if 0
+        DBG("ide_write_some(sector %d, count %d)\n", sector, count);
+#endif
+        done_sectors = 0;
+        do {
+                /* How many sectors are left? */
+                if ((count - done_sectors) > SECTOR_LIMIT)
+                        sectors_this_time = SECTOR_LIMIT;
                 else
-                        DBG("ide_write_one: Error %04x\n", r);
-                return 1;
-        }
+                        sectors_this_time = count - done_sectors;
+#if 0
+                DBG("   ide_write_some(sector %d, sectorcount %d)\n",
+                    sector + done_sectors,
+                    sectors_this_time);
+#endif
+                write_reg8(ih->regs, wd_seccnt, sectors_this_time);
+                ide_setup_address(ih, drive, sector + done_sectors);
+                write_reg8(ih->regs, wd_command, WDCC_WRITE);
 
-        ide_write_data(ih->regs, src);
+                for (s = 0; s < sectors_this_time; s++) {
+                        r = ide_wait_drq(ih->regs);
+                        if (r != 0) {
+                                if (r < 0)
+                                        DBG("ide_write_some: Timeout on DRQ\n");
+                                else
+                                        DBG("ide_write_some: Error %04x\n", r);
+                                return 1;
+                        }
+                        ide_write_data(ih->regs, src + ((done_sectors + s) * 512));
+                }
+                if (ide_wait_nbsy(ih->regs)) {
+                        DBG("ide_write_some: Timeout on post-block nBSY\n");
+                        return 1;
+                }
+                done_sectors += sectors_this_time;
+        } while(done_sectors < count);
+
         return 0;
+}
+
+int     ide_write_one(ide_host_t *ih, unsigned int drive,
+                      unsigned int sector, unsigned char *src)
+{
+        return ide_write_some(ih, drive, sector, 1, src);
 }

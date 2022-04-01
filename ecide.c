@@ -338,12 +338,15 @@ static void ecide_do_immediate(ide_host_t *ih, struct buf *bp)
                 if (r)
                         goto err;
         } else {
-                for (s = start_sector; s < (start_sector + total_sectors); s++) {
-                        r = ide_write_one(ih, drive, s, start_addr);
-                        if (r)
-                                goto err;
-                        start_addr += D_SECSIZE;
-                }
+                /* for (s = start_sector; s < (start_sector + total_sectors); s++) { */
+                /*         r = ide_write_one(ih, drive, s, start_addr); */
+                /*         if (r) */
+                /*                 goto err; */
+                /*         start_addr += D_SECSIZE; */
+                /* } */
+                r = ide_write_some(ih, drive, start_sector, total_sectors, start_addr);
+                if (r)
+                        goto err;
         }
 
         return;
