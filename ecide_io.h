@@ -10,5 +10,8 @@ int     ide_read_one(ide_host_t *ih, unsigned int drive,
                      unsigned int sector, unsigned char *dest);
 int     ide_write_one(ide_host_t *ih, unsigned int drive,
                       unsigned int sector, unsigned char *src);
+int     ide_read_some(ide_host_t *ih, unsigned int drive,
+                      unsigned int sector, unsigned int count,
+                      unsigned char *dest);
 
 #endif
