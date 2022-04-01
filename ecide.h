@@ -62,7 +62,7 @@
 #define ECIDE_REGS(slot) \
     ((struct ecideregs *)(XCB_ADDRESS(FAST,slot) + REGS_LOC))
 
-#define ECIDE_SLOT_REGS_BASE(slot)      XCB_ADDRESS(SLOW, slot)
+#define ECIDE_SLOT_REGS_BASE(slot)      XCB_ADDRESS(FAST, slot)
 
 /*
  * Define macros to handle the 16-bit shifts
