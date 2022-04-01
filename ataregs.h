@@ -67,16 +67,12 @@
  */
 #define WDCS_BUSY       0x80            /* Controller busy bit. */
 #define WDCS_READY      0x40            /* Selected drive is ready */
-#define WDCS_WRTFLT     0x20            /* Write fault */
+#define WDCS_DRVFLT     0x20            /* Drive fault */
 #define WDCS_SEEKCMPLT  0x10            /* Seek complete */
 #define WDCS_DRQ        0x08            /* Data request bit. */
 #define WDCS_ECCCOR     0x04            /* ECC correction made in data */
 #define WDCS_INDEX      0x02            /* Index pulse from selected drive */
 #define WDCS_ERR        0x01            /* Error detect bit. */
-
-#define WDCS_BITS       "\020\010busy\006rdy\006wrtflt\005seekdone\004drq\003ecc_cor\002index\001err"
-
-#define WDERR_BITS      "\020\010badblk\007uncorr\006id_crc\005no_id\003abort\002tr000\001no_dam"
 
 /*
  * Commands for Disk Controller.

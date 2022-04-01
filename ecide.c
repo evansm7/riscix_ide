@@ -319,36 +319,48 @@ static void ecide_do_immediate(ide_host_t *ih, struct buf *bp)
         unsigned int total_sectors;
         unsigned char *start_addr;
         unsigned int s;
+        int r;
 
         di = &ih->drives[drive];
         pt = &di->d_part[PARTNO(mindev)];
         start_sector = (bp->b_blkno*SECS_PER_BLK) + pt->p_start;
         total_sectors = (bp->b_bcount / DEV_BSIZE)*SECS_PER_BLK;
         start_addr = (unsigned char *)bp->b_un.b_addr;
-
+#if 0
         DBG("ecide_do_immediate(card %d, min %d, dr %d) start %d, total %d, %s\n",
             ih->card_num, mindev, drive, start_sector, total_sectors,
             bp->b_flags & B_READ ? "RD" : "WR");
-
+#endif
+        r = 0;
         if (bp->b_flags & B_READ) {
                 for (s = start_sector; s < (start_sector + total_sectors); s++) {
-                        ide_read_one(ih, drive, s, start_addr);
-                        /* FIXME: Any error handling... anything at all! */
+                        r = ide_read_one(ih, drive, s, start_addr);
+                        if (r)
+                                goto err;
                         start_addr += D_SECSIZE;
                 }
         } else {
                 for (s = start_sector; s < (start_sector + total_sectors); s++) {
-                        ide_write_one(ih, drive, s, start_addr);
-                        /* FIXME: Error handling! */
+                        r = ide_write_one(ih, drive, s, start_addr);
+                        if (r)
+                                goto err;
                         start_addr += D_SECSIZE;
                 }
         }
+
+        return;
+err:
+        DBG("ecide_do_immediate(card %d, min %d, dr %d) Transfer error %04x, sector %d\n",
+            ih->card_num, mindev, drive, r, s);
+        bp->b_flags |= B_ERROR;
+        bp->b_error = EIO;
+        bp->b_resid = bp->b_bcount - ((s - start_sector)*D_SECSIZE);
 }
 
 /*
  * ecide_strategy - where I/O requests are processed.
  */
-int ecide_strategy (struct buf *bp)
+int ecide_strategy(struct buf *bp)
 {
         int mindev = minor(bp->b_dev);
         int drive = DRIVENO(mindev);
@@ -475,7 +487,9 @@ int ecide_size (dev_t dev)
                 r = -1;
         else
                 r = di->d_part[PARTNO(mindev)].p_size/SECS_PER_BLK;
+#if 0
         DBG("ecide_size(min %d/dr %d/c %d) = %d\n", mindev, drive, card, r);
+#endif
         return r;
 }
 

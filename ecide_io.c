@@ -12,34 +12,68 @@ extern void DELAY_(int);
 
 #define DELAYUS DELAY_
 
-/* Returns 1 on timeout, else 0 */
+static unsigned char ide_id_buffer[512];
+
+
+/* Returns -1 on timeout, else 0 */
 int     ide_wait_nbsy(regs_t regs)
 {
-        int timeout = 10*100; /* 10ms */
+        int timeout = 1000*1000; /* 1000ms */
+        unsigned int s;
+
+        /* Burn 400ns  after drive select */
+        s = read_reg8(regs, wd_status);
+        s = read_reg8(regs, wd_status);
+        s = read_reg8(regs, wd_status);
 
         do {
-                unsigned int s = read_reg8(regs, wd_status);
+                s = read_reg8(regs, wd_status);
                 if (!(s & WDCS_BUSY))
                         return 0;
-                DELAYUS(10);
+                DELAYUS(1);
         } while(--timeout > 0);
-        return 1;
+        return -1;
 }
 
+/* Slight variation: wait for !Busy and DRQ, but also
+ * check for error.  Fold in the mystical 400ns delay plus
+ * "ignore error for first 4 reads".
+ *
+ * Returns -1 on timeout, 0 on success, or contents of error
+ * register + status register if ERR/DF bits set in status.
+ */
 int     ide_wait_drq(regs_t regs)
 {
-        int timeout = 1000*10; /* 1000ms */
+        int r = 0;
+        int count = 4;
+        int timeout = 1000*1000; /* 1000ms */
+        unsigned int s;
+
+        /* Wait for status to "settle", in particular legend has it that
+         * ERR/DF bits will take some time to update after a command.
+         */
+        s = read_reg8(regs, wd_status);
+        s = read_reg8(regs, wd_status);
+        s = read_reg8(regs, wd_status);
+        s = read_reg8(regs, wd_status);
 
         do {
-                unsigned int s = read_reg8(regs, wd_status);
-                if (s & WDCS_DRQ)
-                        return 0;
-                DELAYUS(100);
-        } while(--timeout > 0);
-        return 1;
-}
+                /* Look for:
+                 * BSY=0, DRQ=1 (yay, carry on)
+                 * ERR=1 or DF=1 (d'oh, return error)
+                 */
+                s = read_reg8(regs, wd_status);
+                if (!(s & WDCS_BUSY)) {
+                        if ((s & WDCS_ERR) || (s & WDCS_DRVFLT))
+                                return (s << 8) | read_reg8(regs, wd_error);
+                        if (s & WDCS_DRQ)
+                                return 0;
+                }
 
-static unsigned char ide_id_buffer[512];
+                DELAYUS(1);
+        } while(--timeout > 0);
+        return -1;
+}
 
 /* Read a sector-sized chunk (512B) */
 static void     ide_read_data(regs_t regs, unsigned char *dest)
@@ -128,6 +162,11 @@ static void ide_parse_identify(u16 *buff, drive_info_t *di)
                fw_strb, caps, di->lba_supported ? "" : "no ");
 }
 
+static void     ide_select_drive(ide_host_t *ih, unsigned int drive)
+{
+        write_reg8(ih->regs, wd_sdh, DRVHD(drive, 0));
+}
+
 /* Reset drives?
  * Identify device
  */
@@ -156,8 +195,7 @@ int     ide_init(ide_host_t *ih)
                 ih->drives[i].heads = 0;
                 ih->drives[i].sec_per_track = 0;
 
-                /* Select drive */
-                write_reg8(ih->regs, wd_sdh, DRVHD(i, 0));
+                ide_select_drive(ih, i);
                 r = ide_wait_nbsy(ih->regs);
                 if (r) {
                         DBG("ide_init: Timeout on nbusy for drive %d\n", i);
@@ -167,8 +205,11 @@ int     ide_init(ide_host_t *ih)
                 write_reg8(ih->regs, wd_command, WDCC_IDENTIFY);
 
                 r = ide_wait_drq(ih->regs);
-                if (r) {
-                        DBG("ide_init: Timeout on DRQ for IDENTITY on drive %d\n", i);
+                if (r != 0) {
+                        if (r < 0)
+                                DBG("ide_init: Timeout on DRQ for IDENTITY on drive %d\n", i);
+                        else
+                                DBG("ide_init: Error for IDENTITY on drive %d: %04x\n", i, r);
                         continue;
                 }
                 ih->drives[i].present = 1;
@@ -207,6 +248,8 @@ static void     ide_setup_address(ide_host_t *ih, unsigned int drive, unsigned i
 int     ide_read_one(ide_host_t *ih, unsigned int drive,
                      unsigned int sector, unsigned char *dest)
 {
+        int r;
+        ide_select_drive(ih, drive);
         if (ide_wait_nbsy(ih->regs)) {
                 DBG("ide_read_one: Timeout on nbusy\n");
                 return 1;
@@ -218,8 +261,12 @@ int     ide_read_one(ide_host_t *ih, unsigned int drive,
 
         write_reg8(ih->regs, wd_command, WDCC_READ);
 
-        if (ide_wait_drq(ih->regs)) {
-                DBG("ide_read_one: Timeout on DRQ\n");
+        r = ide_wait_drq(ih->regs);
+        if (r != 0) {
+                if (r < 0)
+                        DBG("ide_read_one: Timeout on DRQ\n");
+                else
+                        DBG("ide_read_one: Error %04x\n", r);
                 return 1;
         }
 
@@ -230,6 +277,8 @@ int     ide_read_one(ide_host_t *ih, unsigned int drive,
 int     ide_write_one(ide_host_t *ih, unsigned int drive,
                       unsigned int sector, unsigned char *src)
 {
+        int r;
+        ide_select_drive(ih, drive);
         if (ide_wait_nbsy(ih->regs)) {
                 DBG("ide_write_one: Timeout on nbusy\n");
                 return 1;
@@ -241,8 +290,12 @@ int     ide_write_one(ide_host_t *ih, unsigned int drive,
 
         write_reg8(ih->regs, wd_command, WDCC_WRITE);
 
-        if (ide_wait_drq(ih->regs)) {
-                DBG("ide_write_one: Timeout on DRQ\n");
+        r = ide_wait_drq(ih->regs);
+        if (r != 0) {
+                if (r < 0)
+                        DBG("ide_write_one: Timeout on DRQ\n");
+                else
+                        DBG("ide_write_one: Error %04x\n", r);
                 return 1;
         }
 
