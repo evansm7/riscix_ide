@@ -73,6 +73,12 @@ static int      ide_probe_adfs_parts(ide_host_t *ih, unsigned int drive,
         }
         /* Sweet! Found RISCiX section, finally.... */
         rix_pt_cyl = bb->partition_cyl_low | (bb->partition_cyl_high << 8);
+        if (rix_pt_cyl & 1) {
+                printf("ecide%d:%d RISCiX partition cyl offset %d is not even!\n",
+                       ih->card_num, drive, rix_pt_cyl);
+                return 1;
+        }
+        rix_pt_cyl /= 2; /* specified as though 256B sectors, but we have 512B! */
         rix_pt_sector = sector_offset + sector_from_cyl(&ih->drives[drive], rix_pt_cyl);
         printf("ecide%d:%d Found RISCiX partition table at cyl %d (abs sector %d)\n",
                ih->card_num, drive, rix_pt_cyl, rix_pt_sector);
@@ -94,11 +100,20 @@ static int      ide_probe_adfs_parts(ide_host_t *ih, unsigned int drive,
         }
         /* 6. Dump/log table */
         for (p = 0; p < NRISCIX_PARTITIONS; p++) {
+                /* HDForm specifies partition sizes in units of cylinders
+                 * of 256B sectors, so that the RISCiX partition table cylinder
+                 * offset is in the units expected by RISCiXfs.
+                 *
+                 * We need to divide everything by two and complain bitterly
+                 * if the partitions were created on "half sector"/odd boundaries.
+                 */
                 if (rpt->partitions[p].rp_length)
                         printf(" %d: '%s' %d +%d type %d\n", p, rpt->partitions[p].rp_name,
                                rpt->partitions[p].rp_start, rpt->partitions[p].rp_length,
                                rpt->partitions[p].rp_type);
                 /* What is type used for?  Auto-probe of swap/root, sure... do we need it? */
+
+                ih->drives[drive].d_part[p].p_size = 0;         /* Default not present */
 
                 if (rpt->partitions[p].rp_type) {
                         /* We store the partitions in units of sector (not CHS faff)
@@ -108,13 +123,19 @@ static int      ide_probe_adfs_parts(ide_host_t *ih, unsigned int drive,
                          * In addition, the start is absolute (not relative to a possible
                          * container partition, e.g. in ZIDEFS), so add on the offset.
                          */
+                        if ((rpt->partitions[p].rp_start & 1) || (rpt->partitions[p].rp_length & 1)) {
+                                printf("ecide%d:%d Ignoring mis-aligned partition %d (start %d, len %d)\n",
+                                       ih->card_num, drive, p,
+                                       rpt->partitions[p].rp_start,
+                                       rpt->partitions[p].rp_length);
+                                continue;
+                        }
+
                         ih->drives[drive].d_part[p].p_start = sector_offset +
-                                sector_from_cyl(&ih->drives[drive], rpt->partitions[p].rp_start);
+                                sector_from_cyl(&ih->drives[drive], rpt->partitions[p].rp_start/2);
                         ih->drives[drive].d_part[p].p_size = sector_from_cyl(&ih->drives[drive],
-                                                                             rpt->partitions[p].rp_length);
+                                                                             rpt->partitions[p].rp_length/2);
                         ih->drives[drive].d_part[p].p_rdonly = 0;       /* FIXME: get this from type? */
-                } else {
-                        ih->drives[drive].d_part[p].p_size = 0;         /* Not present */
                 }
         }
         return 0;
