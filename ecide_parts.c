@@ -227,7 +227,7 @@ static int      ide_probe_zidefs_parts(ide_host_t *ih, unsigned int drive, u8 *s
         /* Find partitions that match the requested drive */
         for (i = 0; i < 4; i++) {
                 if (zpt.pt[i].dr_start != 0xffffffff &&
-                    (zpt.pt[i].dr_start & (1<<31)) == (drive << 31)) {
+                    ((zpt.pt[i].dr_start >> 31) == (drive & 1))) {
                         unsigned int start_cyl = zpt.pt[i].dr_start & 0x7fffffff;
                         /* Convert from cylinders to sectors kthx */
 
