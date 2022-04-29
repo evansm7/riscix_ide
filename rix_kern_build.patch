@@ -45,7 +45,7 @@
 >     0, ecide_init_zidefs, ecide_init_low, ecide_shutdown, 0 /* &ecide_scavenge */ },
 >   /* Note the original ICS podule ROM uses XCB_COMPANY_IANCOPESTAKESOFTWARE & XCB_COUNTRY_UK */
 >   { { XCB_PRODUCT_IDE_EURO16, XCB_COMPANY_CASTLE, XCB_COUNTRY_UK },
->     0, ecide_init_zidefs, ecide_init_low, ecide_shutdown, 0 /* &ecide_scavenge */ },
+>     0, ecide_init_castle, ecide_init_low, ecide_shutdown, 0 /* &ecide_scavenge */ },
 >   /* Can't scavenge unless every podule sharing that code doesn't probe! */
 *** M/Makefile-orig
 --- M/Makefile
