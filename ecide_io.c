@@ -100,6 +100,8 @@ int     ide_wait_drq(regs_t regs)
 
 extern void     ide_read_data(regs_t regs, unsigned char *dest);
 extern void     ide_write_data(regs_t regs, unsigned char *src);
+extern void     ide_read_data8(regs_t regs, regs_t hbl, unsigned char *dest);
+extern void     ide_write_data8(regs_t regs, regs_t hbl, unsigned char *src);
 
 #ifdef GENERIC_C_PIO_TRANSFERS
 /* Read a sector-sized chunk (512B) */
@@ -124,6 +126,41 @@ static void     ide_write_data(regs_t regs, unsigned char *src)
                 unsigned int w = *d++;
                 write_reg16(regs, wd_data, w & 0xffff);
                 write_reg16(regs, wd_data, (w >> 16));
+        }
+}
+
+/* Read a sector-sized chunk (512B), with a high-byte latch */
+static void     ide_read_data8(regs_t regs, regs_t hbl, unsigned char *dest)
+{
+        int i;
+        unsigned int *dp = (unsigned int *)dest;
+
+        for (i = 0; i < 512/4; i++) {
+                /* Read of the data reg latches data in the high-byte latch: */
+                unsigned int w, x, y, z;
+                w = read_reg8(regs, wd_data);
+                x = read_reg8(hbl, 0);
+                y = read_reg8(regs, wd_data);
+                z = read_reg8(hbl, 0);
+                w |= x << 8;
+                w |= y << 16;
+                w |= z << 24;
+                *dp++ = w;
+        }
+}
+
+static void     ide_write_data8(regs_t regs, regs_t hbl, unsigned char *src)
+{
+        int i;
+        unsigned int *d = (unsigned int *)src;
+
+        for (i = 0; i < 512/4; i++) {
+                unsigned int w = *d++;
+                /* Writing the data reg combines with previous high-byte value */
+                write_reg8(hbl, 0, (w >> 8) & 0xff);
+                write_reg8(regs, wd_data, w & 0xff);
+                write_reg8(hbl, 0, (w >> 24) & 0xff);
+                write_reg8(regs, wd_data, (w >> 16) & 0xff);
         }
 }
 #endif
@@ -184,7 +221,7 @@ static void ide_parse_identify(u16 *buff, drive_info_t *di, int card)
         ide_copy_string(id_strb, &buff[27], 40/2);
         ide_copy_string(fw_strb, &buff[23], 8/2);
 
-        printf("ecide%d: Disk ID '%s', %dMB (%ld sectors, CHS %d/%d/%d)\n"
+        printf("ecide%d: '%s', %dMB (%ld sectors, CHS %d/%d/%d)\n"
                "        [revision '%s', caps %04x (%sLBA)]\n", card,
                id_strb, di->total_sectors/2048, di->total_sectors, cyl, heads, lsplt,
                fw_strb, caps, di->lba_supported ? "" : "no ");
@@ -242,7 +279,10 @@ int     ide_init(ide_host_t *ih, int card, u8 *scratch_buffer)
                 }
                 ih->drives[i].present = 1;
                 td++;
-                ide_read_data(ih->regs, scratch_buffer);
+                if (!ih->hi_latch)
+                        ide_read_data(ih->regs, scratch_buffer);
+                else
+                        ide_read_data8(ih->regs, ih->hi_latch, scratch_buffer);
 
                 ide_parse_identify((u16 *)scratch_buffer, &ih->drives[i], card);
         }
@@ -319,7 +359,11 @@ int     ide_read_some(ide_host_t *ih, unsigned int drive,
                                         DBG("ide_read_some: Error %04x\n", r);
                                 return 1;
                         }
-                        ide_read_data(ih->regs, dest + ((done_sectors + s) * 512));
+                        if (!ih->hi_latch)
+                                ide_read_data(ih->regs, dest + ((done_sectors + s) * 512));
+                        else
+                                ide_read_data8(ih->regs, ih->hi_latch,
+                                               dest + ((done_sectors + s) * 512));
                         /* Loop and wait for DRQ between each sector! */
                 }
                 if (ide_wait_nbsy(ih->regs)) {
@@ -383,7 +427,11 @@ int     ide_write_some(ide_host_t *ih, unsigned int drive,
                                         DBG("ide_write_some: Error %04x\n", r);
                                 return 1;
                         }
-                        ide_write_data(ih->regs, src + ((done_sectors + s) * 512));
+                        if (!ih->hi_latch)
+                                ide_write_data(ih->regs, src + ((done_sectors + s) * 512));
+                        else
+                                ide_write_data8(ih->regs, ih->hi_latch,
+                                                src + ((done_sectors + s) * 512));
                 }
                 if (ide_wait_nbsy(ih->regs)) {
                         DBG("ide_write_some: Timeout on post-block nBSY\n");

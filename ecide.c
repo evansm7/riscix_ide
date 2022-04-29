@@ -115,7 +115,7 @@
 
 #define PIO_POLLED yes
 
-char *ecide_ident = "ecide IDE driver v0.1, (c) 2022 Matt Evans";
+char *ecide_ident = "ecide IDE driver v0.2, (c) 2022 Matt Evans";
 
 /*
  * Memory scavenging support.  If no expansion card for this device is
@@ -214,7 +214,7 @@ static void release_raw_buf (struct buf *bp)
 
 /* Expansion Card Bus manager interface code */
 
-static void ecide_init_high(int slot, regs_t regs, host_type_t host_type)
+static void ecide_init_high(int slot, regs_t regs, regs_t hi_latch, host_type_t host_type)
 {
         int card;
         int i;
@@ -238,6 +238,7 @@ static void ecide_init_high(int slot, regs_t regs, host_type_t host_type)
         ih->slot = slot;
         ih->card_num = card;
         ih->regs = regs;
+        ih->hi_latch = hi_latch;
         ih->type = host_type;
 
         sector_scratch = (u8 *)permalloc(512);
@@ -270,14 +271,58 @@ static void ecide_init_high(int slot, regs_t regs, host_type_t host_type)
         }
 }
 
+static int      ecide_z_probe_width(int slot)
+{
+        regs_t b = (regs_t)(XCB_ADDRESS(SLOW, slot));
+        unsigned int d0, d1;
+        unsigned int l;
+        int r = 0;
+
+        /* See if IDE regs (0x2400) alias the ROM page latch (0x2000).
+         * Step 1 is find a ROM offset with differing bytes in different
+         * pages.
+         */
+        for (l = 0; l < 0x2000/4; l++) {
+                write_reg8(b, 0x2000/4, 0);     /* Select page 0 */
+                d0 = read_reg8(b, l);
+                write_reg8(b, 0x2000/4, 1);     /* Select page 1 */
+                d1 = read_reg8(b, l);
+                if (d0 != d1)
+                        break;                  /* Good, offset l differs between pages */
+        }
+        if (l == 0x2000/4) {
+                printf("ecide, slot %d: **** FAIL **** Can't find ZIDEFS width\n",
+                       slot);
+                return 0;
+        }
+
+        /* Now, see if 0x2400 decodes to that ROM latch: */
+        write_reg8(b, 0x2000/4, 1);
+        d0 = read_reg8(b, l);                   /* Read page 1 */
+        write_reg8(b, 0x2400/4, 0);
+        d1 = read_reg8(b, l);                   /* Reads page 0 if aliases */
+
+        if (d0 == d1)                           /* No alias? A30x0 8-bit version */
+                r = 8;
+        else
+                r = 16;
+
+        DBG("ecide, slot %d: %d-bit podule\n", slot, r);
+        return r;
+}
+
 /* Probe entrypoint for ICS/IanS ZIDEFS podule:
  * No IRQs, ZIDEFS partitions
  */
 void ecide_init_zidefs(int slot)
 {
-        regs_t ide_regs = (regs_t)(XCB_ADDRESS(FAST, slot) + 0x3000);
+        int width = ecide_z_probe_width(slot);
+        regs_t podule_regs = (regs_t)XCB_ADDRESS(FAST, slot);
 
-        ecide_init_high(slot, ide_regs, HOST_ZIDEFS);
+        if (width == 16)
+                ecide_init_high(slot, podule_regs + 0x3000, 0, HOST_ZIDEFS);
+        else if (width == 8)
+                ecide_init_high(slot, podule_regs + 0x2400, podule_regs + 0x2800, HOST_ZIDEFS);
 }
 
 /* Probe entrypoint for Castle IDE podule:
@@ -289,7 +334,7 @@ void ecide_init_castle(int slot)
 
         write_reg8(XCB_ADDRESS(SYNC, slot) + 0x3000, 0, 0x00);  /* Disable IRQ (for now */
 
-        ecide_init_high(slot, ide_regs, HOST_CASTLE);
+        ecide_init_high(slot, ide_regs, 0, HOST_CASTLE);
 }
 
 

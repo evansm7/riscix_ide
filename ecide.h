@@ -121,6 +121,7 @@ typedef enum {
 typedef struct {
         int                     slot;
         regs_t                  regs;
+        regs_t                  hi_latch;   /* If zero, 16b access is supported */
         host_type_t             type;
         drive_info_t            drives[2];
         int                     card_num;

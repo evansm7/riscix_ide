@@ -30,12 +30,11 @@ pc      .req    r15
 
         .text
 
-        .global _ide_read_data, ide_read_data
+        .global _ide_read_data
         @ r0 = IO regs
         @ r1 = destination buffer
         @ Read 512 bytes from the 16b data reg.
 _ide_read_data:
-ide_read_data:
         stmfd   sp!,{r4-r7}
         mov     r2, #0
 1:
@@ -71,11 +70,61 @@ ide_read_data:
         ldmfd   sp!,{r4-r7}
         movs    pc, lr
 
-        .global _ide_write_data, ide_write_data
+
+        .global _ide_read_data8
+        @ r0 = IO regs
+        @ r1 = High-byte latch
+        @ r2 = destination buffer
+        @ Read 512 bytes from the 8b data reg + 8b HBL.
+_ide_read_data8:
+        stmfd   sp!,{r4-r8}
+        mov     r8, #0
+1:
+        ldrb    r3, [r0, #0]
+        ldrb    r4, [r1]
+        orr     r3, r3, r4, lsl #8
+        ldrb    r4, [r0, #0]
+        orr     r3, r3, r4, lsl #16
+        ldrb    r4, [r1]
+        orr     r4, r3, r4, lsl #24
+
+        ldrb    r3, [r0, #0]
+        ldrb    r5, [r1]
+        orr     r3, r3, r5, lsl #8
+        ldrb    r5, [r0, #0]
+        orr     r3, r3, r5, lsl #16
+        ldrb    r5, [r1]
+        orr     r5, r3, r5, lsl #24
+
+        ldrb    r3, [r0, #0]
+        ldrb    r6, [r1]
+        orr     r3, r3, r6, lsl #8
+        ldrb    r6, [r0, #0]
+        orr     r3, r3, r6, lsl #16
+        ldrb    r6, [r1]
+        orr     r6, r3, r6, lsl #24
+
+        ldrb    r3, [r0, #0]
+        ldrb    r7, [r1]
+        orr     r3, r3, r7, lsl #8
+        ldrb    r7, [r0, #0]
+        orr     r3, r3, r7, lsl #16
+        ldrb    r7, [r1]
+        orr     r7, r3, r7, lsl #24
+
+        stmia   r2!, {r4, r5, r6, r7}
+
+        add     r8, r8, #1
+        cmp     r8, #(512/4/4)
+        blt     1b
+        ldmfd   sp!,{r4-r8}
+        movs    pc, lr
+
+
+        .global _ide_write_data
         @ r0 = IO regs
         @ r1 = source buffer
 _ide_write_data:
-ide_write_data:
         stmfd   sp!,{r4-r7}
         mov     r2, #0
 1:
@@ -101,4 +150,53 @@ ide_write_data:
         cmp     r2, #(512/4/4)
         blt     1b
         ldmfd   sp!,{r4-r7}
+        movs    pc, lr
+
+
+        .global _ide_write_data8
+        @ r0 = IO regs
+        @ r1 = High-byte latch
+        @ r2 = source buffer
+_ide_write_data8:
+        stmfd   sp!,{r4-r8}
+        mov     r8, #0
+1:
+        ldmia   r2!, {r4-r7}
+
+        mov     r3, r4, lsr#8
+        strb    r3, [r1]
+        strb    r4, [r0, #0]
+        mov     r3, r4, lsr#24
+        mov     r4, r4, lsr#16
+        strb    r3, [r1]
+        strb    r4, [r0, #0]
+
+        mov     r3, r5, lsr#8
+        strb    r3, [r1]
+        strb    r5, [r0, #0]
+        mov     r3, r5, lsr#24
+        mov     r5, r5, lsr#16
+        strb    r3, [r1]
+        strb    r5, [r0, #0]
+
+        mov     r3, r6, lsr#8
+        strb    r3, [r1]
+        strb    r6, [r0, #0]
+        mov     r3, r6, lsr#24
+        mov     r6, r6, lsr#16
+        strb    r3, [r1]
+        strb    r6, [r0, #0]
+
+        mov     r3, r7, lsr#8
+        strb    r3, [r1]
+        strb    r7, [r0, #0]
+        mov     r3, r7, lsr#24
+        mov     r7, r7, lsr#16
+        strb    r3, [r1]
+        strb    r7, [r0, #0]
+
+        add     r8, r8, #1
+        cmp     r8, #(512/4/4)
+        blt     1b
+        ldmfd   sp!,{r4-r8}
         movs    pc, lr
