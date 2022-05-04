@@ -1,6 +1,6 @@
 # Acorn RISC iX IDE disc driver (ecide)
 
-v0.1 4 April 2022
+v0.2 4 May 2022
 
 
 A very simple, very PIO IDE disc driver for Acorn's RISC iX operating system.  It's a present for RISC iX 1.21's 30th birthday which happens to be right about now.  :-)
@@ -57,7 +57,7 @@ Filesystem            kbytes    used   avail capacity  Mounted on
 ### Features
 
    - Supports 16-bit PIO accesses to both LBA and non-LBA/CHS drives
-   - Supports the "Ian Stocks ZIDEFS podule"
+   - Supports the "Ian Stocks ZIDEFS podule" (16-bit and 8-bit A30x0 versions), and Castle 16-bit IDE podule
    - Supports RISC iX sections embedded in any of the ZIDEFS partition (one RISC iX partition table per physical drive)
    - Supports the Castle 16-bit IDE podule _in principle_ (but doesn't work yet -- see ecide1 in the dmesg above!)
    - Easily extensible to support other interfaces
@@ -70,8 +70,7 @@ Filesystem            kbytes    used   avail capacity  Mounted on
 (In order of most to least conspicuous)
 
    - Interrupts!  Well, on cards that support them.  RISC OS doesn't get much benefit from IRQs, but RISC iX spends a lot of system time on polled transfers which could be spent elsewhere.
-   - Support more IDE podules
-   - Castle 16-bit IDE is a WIP/needs debugging
+   - Support more IDE podules (e.g. Castle 8-bit A30x0)
    - Support the 8-bit/A30x0 versions of Ian Stocks IDE and Castle IDE podules
    - Support A5000/A4000/A3020 native/82c711 IDE
    - Support character device access
