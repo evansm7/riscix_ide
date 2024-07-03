@@ -94,13 +94,18 @@ static unsigned int     filecore_checksum(u8 *bootblock)
 }
 
 static int      ide_probe_adfs_parts(ide_host_t *ih, unsigned int drive,
-                                     unsigned int sector_offset, u8 *scratch)
+                                     unsigned int sector_offset, u8 *scratch,
+                                     unsigned int * out_next_sector_offset)
 {
         int r;
         int p;
         struct filecore_bootblock *bb;
         struct riscix_ide_partition_table *rpt;
         unsigned int rix_pt_cyl, rix_pt_sector;
+
+        if (out_next_sector_offset != NULL) {
+                *out_next_sector_offset = 0;
+        }
 
         r = ide_read_one(ih, drive, FILECORE_BOOT_SECTOR + sector_offset, scratch);
         if (r) {
@@ -121,6 +126,16 @@ static int      ide_probe_adfs_parts(ide_host_t *ih, unsigned int drive,
             ih->card_num, drive,
             bb->log2secsize, bb->secspertrack, bb->heads, bb->disc_size, bb->disc_type,
             &bb->disc_name[0]);
+
+        /* Calculate the offset of the sector following the end of volume and
+         * return it in an out-parameter (used for HCCS partitioning scheme where
+         * there's no partition table, just a bunch of concatenated ADFS
+         * filesystems)
+         */
+        if (out_next_sector_offset != NULL) {
+                *out_next_sector_offset = sector_offset + (bb->disc_size >> bb->log2secsize);
+        }
+
         /* 3.  Check for RISCiX partition table */
         if (bb->partition_type != PARTITION_TYPE_RISCIX_MFM) {
                 return 1;
@@ -240,11 +255,36 @@ static int      ide_probe_zidefs_parts(ide_host_t *ih, unsigned int drive, u8 *s
                         if (!ide_probe_adfs_parts(ih, drive,
                                                   sector_from_cyl(&ih->drives[drive],
                                                                   start_cyl),
-                                                  scratch))
+                                                  scratch, NULL))
                                 return 0;
                 }
         }
         return 1; /* Nothing found */
+}
+
+/* HCCS IDEFS does not have a partition table; its 'partitioning' scheme is
+ * just to concatenate a bunch of plain ADFS volumes together, and look for
+ * another volume starting immediately after the last (up to a maximium of 4).
+ * We can work with this, but since it only understands ADFS volumes, the RISCiX
+ * filesystem must always come after the end of the last ADFS partition.
+ */
+static int      ide_probe_hccs_parts(ide_host_t *ih, unsigned int drive, u8 *scratch) {
+        int i;
+        unsigned int next_sector;
+        for (i = 0, next_sector = 0 ; i < 4; i++) {
+                DBG("ecide%d:%d:  partition %d start probe at sector %d\n",
+                            ih->card_num, drive, i, next_sector);
+                if (ide_probe_adfs_parts(ih, drive, next_sector, scratch, &next_sector) == 0) {
+                        /* Like with ZIDEFS, we stop once we find an ADFS boot
+                        block that points to a valid RISCiX filesystem */
+                        return 0;
+                }
+                if (next_sector == 0) {
+                        DBG("ecide%d:%d:  no more partitions\n", ih->card_num, drive);
+                        break;
+                }
+        }
+        return 1;
 }
 
 /* Find RISCiX partitions, possibly within some other kind of RISC OS
@@ -260,7 +300,7 @@ void    ide_probe_partitions(ide_host_t *ih, unsigned int drive, u8 *scratch)
          * For instance, a drive on an ADFS IDE card (or A5000-like machine)
          * contains one ADFS partition, after which a RISCiX table lives.
          *
-         * But, an ICS/ZIDEFS card has a partitioning scheme that might
+         * But, an ICS/ZIDEFS or HCCS card has a partitioning scheme that might
          * contain a RISCiX 'partition' (containing the real RISCiX partitions
          * within.
          */
@@ -270,7 +310,10 @@ void    ide_probe_partitions(ide_host_t *ih, unsigned int drive, u8 *scratch)
                 break;
         case HOST_CASTLE:
                 /* No exotic partitioning scheme, just ADFS-then-stuff-afterwards */
-                ide_probe_adfs_parts(ih, drive, 0, scratch);
+                ide_probe_adfs_parts(ih, drive, 0, scratch, NULL);
+                break;
+        case HOST_HCCS:
+                ide_probe_hccs_parts(ih, drive, scratch);
                 break;
         default:
                 printf("ecide%d: Cannot probe partitions, unknown controller %d\n",

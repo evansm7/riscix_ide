@@ -129,7 +129,7 @@ char *ecide_ident = "ecide IDE driver v0.2, (c) 2022 Matt Evans";
  * scavenge if any cards are found, for simple XCB device drivers like
  * this one the function can always return TRUE.)  Further
  * declarations at the end of this file complete the definition of the
- * scavenging structure. 
+ * scavenging structure.
  *
  * N.B. Any variables which are NOT to be scavenged (e.g. driver
  * configuration variables, potentially examined by other kernel code
@@ -148,8 +148,8 @@ static int ecide_code_base() { return 1; }
 
 /*
  * The following contains the actual number of cards present,
- * up to a limit of MAX_CARD - this is determined at boot 
- * time in the expansion card initialisation sequence. 
+ * up to a limit of MAX_CARD - this is determined at boot
+ * time in the expansion card initialisation sequence.
  * Cards are always numbered in the range 0..(n_card-1) from the XCB
  * manager's scan of the expansion card bus (which is done in
  * physical slot order).
@@ -214,7 +214,7 @@ static void release_raw_buf (struct buf *bp)
 
 /* Expansion Card Bus manager interface code */
 
-static void ecide_init_high(int slot, regs_t regs, regs_t hi_latch, host_type_t host_type)
+static void ecide_init_high(int slot, regs_t regs, regs_t hi_latch_write, regs_t hi_latch_read, host_type_t host_type)
 {
         int card;
         int i;
@@ -238,7 +238,8 @@ static void ecide_init_high(int slot, regs_t regs, regs_t hi_latch, host_type_t 
         ih->slot = slot;
         ih->card_num = card;
         ih->regs = regs;
-        ih->hi_latch = hi_latch;
+        ih->hi_latch_write = hi_latch_write;
+        ih->hi_latch_read = hi_latch_read;
         ih->type = host_type;
 
         sector_scratch = (u8 *)permalloc(512);
@@ -320,9 +321,10 @@ void ecide_init_zidefs(int slot)
         regs_t podule_regs = (regs_t)XCB_ADDRESS(FAST, slot);
 
         if (width == 16)
-                ecide_init_high(slot, podule_regs + 0x3000, 0, HOST_ZIDEFS);
+                ecide_init_high(slot, podule_regs + 0x3000, 0, 0, HOST_ZIDEFS);
         else if (width == 8)
-                ecide_init_high(slot, podule_regs + 0x2400, podule_regs + 0x2800, HOST_ZIDEFS);
+                ecide_init_high(slot, podule_regs + 0x2400, podule_regs + 0x2800,
+                                podule_regs + 0x2800, HOST_ZIDEFS);
 }
 
 /* Probe entrypoint for Castle IDE podule:
@@ -334,9 +336,25 @@ void ecide_init_castle(int slot)
 
         write_reg8(XCB_ADDRESS(SYNC, slot) + 0x3000, 0, 0x00);  /* Disable IRQ (for now */
 
-        ecide_init_high(slot, ide_regs, 0, HOST_CASTLE);
+        ecide_init_high(slot, ide_regs, 0, 0, HOST_CASTLE);
 }
 
+/* Probe entrypoint for HCCS A3000 IDE podule:
+ * No IRQs, HCCS 'partitions'
+ *
+ * Address map:
+ *      0000-1fff: ROM
+ *      2000-203f: VIA (paging latch on port A)
+ *      2100-213f: IDE registers
+ *      2140-217f: IDE alternate registers
+ *      2200     : IDE high-byte latch (write)
+ *      2300     : IDE high-byte latch (read)
+ */
+void ecide_init_hccs(int slot) {
+        regs_t podule_regs = (regs_t)XCB_ADDRESS(FAST, slot);
+        ecide_init_high(slot, podule_regs + 0x2100, podule_regs + 0x2200,
+                        podule_regs + 0x2300, HOST_HCCS);
+}
 
 int ecide_init_low(int slot, int irqs)
 {
@@ -656,7 +674,7 @@ static int iocheck (struct uio *uio)
          * word (integer, 4 bytes) boundary, since this is all that our
          * transfer code will cope with,
          */
-        iov = uio->uio_iov; 
+        iov = uio->uio_iov;
         for (i = uio->uio_iovcnt; i > 0; --i, ++iov)
                 if ((iov->iov_len & (DEV_BSIZE-1)) != 0 ||
                     ((int)iov->iov_base & ((sizeof(int))-1)) != 0)
