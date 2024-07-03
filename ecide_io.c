@@ -98,10 +98,6 @@ int     ide_wait_drq(regs_t regs)
         return -1;
 }
 
-extern void     ide_read_data(regs_t regs, unsigned char *dest);
-extern void     ide_write_data(regs_t regs, unsigned char *src);
-extern void     ide_read_data8(regs_t regs, regs_t hbl, unsigned char *dest);
-extern void     ide_write_data8(regs_t regs, regs_t hbl, unsigned char *src);
 
 #ifdef GENERIC_C_PIO_TRANSFERS
 /* Read a sector-sized chunk (512B) */
@@ -163,6 +159,11 @@ static void     ide_write_data8(regs_t regs, regs_t hbl, unsigned char *src)
                 write_reg8(regs, wd_data, (w >> 16) & 0xff);
         }
 }
+#else
+extern void     ide_read_data(regs_t regs, unsigned char *dest);
+extern void     ide_write_data(regs_t regs, unsigned char *src);
+extern void     ide_read_data8(regs_t regs, regs_t hbl, unsigned char *dest);
+extern void     ide_write_data8(regs_t regs, regs_t hbl, unsigned char *src);
 #endif
 
 static void ide_copy_string(char *dst, u16 *src, int num_hwords)
@@ -279,10 +280,10 @@ int     ide_init(ide_host_t *ih, int card, u8 *scratch_buffer)
                 }
                 ih->drives[i].present = 1;
                 td++;
-                if (!ih->hi_latch)
+                if (!ih->hi_latch_read)
                         ide_read_data(ih->regs, scratch_buffer);
                 else
-                        ide_read_data8(ih->regs, ih->hi_latch, scratch_buffer);
+                        ide_read_data8(ih->regs, ih->hi_latch_read, scratch_buffer);
 
                 ide_parse_identify((u16 *)scratch_buffer, &ih->drives[i], card);
         }
@@ -359,10 +360,10 @@ int     ide_read_some(ide_host_t *ih, unsigned int drive,
                                         DBG("ide_read_some: Error %04x\n", r);
                                 return 1;
                         }
-                        if (!ih->hi_latch)
+                        if (!ih->hi_latch_read)
                                 ide_read_data(ih->regs, dest + ((done_sectors + s) * 512));
                         else
-                                ide_read_data8(ih->regs, ih->hi_latch,
+                                ide_read_data8(ih->regs, ih->hi_latch_read,
                                                dest + ((done_sectors + s) * 512));
                         /* Loop and wait for DRQ between each sector! */
                 }
@@ -427,10 +428,10 @@ int     ide_write_some(ide_host_t *ih, unsigned int drive,
                                         DBG("ide_write_some: Error %04x\n", r);
                                 return 1;
                         }
-                        if (!ih->hi_latch)
+                        if (!ih->hi_latch_write)
                                 ide_write_data(ih->regs, src + ((done_sectors + s) * 512));
                         else
-                                ide_write_data8(ih->regs, ih->hi_latch,
+                                ide_write_data8(ih->regs, ih->hi_latch_write,
                                                 src + ((done_sectors + s) * 512));
                 }
                 if (ide_wait_nbsy(ih->regs)) {
