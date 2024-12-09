@@ -350,10 +350,28 @@ void ecide_init_castle(int slot)
  *      2200     : IDE high-byte latch (write)
  *      2300     : IDE high-byte latch (read)
  */
-void ecide_init_hccs(int slot) {
+void ecide_init_hccs(int slot)
+{
         regs_t podule_regs = (regs_t)XCB_ADDRESS(FAST, slot);
         ecide_init_high(slot, podule_regs + 0x2100, podule_regs + 0x2200,
                         podule_regs + 0x2300, HOST_HCCS);
+}
+
+/* Probe entrypoint for HCCS Ultimate A30x0 IDE podule:
+ * No IRQs, HCCS 'partitions'
+ *
+ * Address map:
+ *      0000-1fff: ROM
+ *      2d00-2d3f: IDE registers
+ *      2d40-2d7f: IDE alternate registers
+ *      2e00     : IDE high-byte latch (write)
+ *      2f00     : IDE high-byte latch (read)
+ */
+void ecide_init_hccs_ultimate(int slot)
+{
+        regs_t podule_regs = (regs_t)XCB_ADDRESS(FAST, slot);
+        ecide_init_high(slot, podule_regs + 0x2d00, podule_regs + 0x2e00,
+                        podule_regs + 0x2f00, HOST_HCCS);
 }
 
 int ecide_init_low(int slot, int irqs)
