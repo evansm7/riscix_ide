@@ -1,9 +1,9 @@
 # Acorn RISC iX IDE disc driver (ecide)
 
-v0.2 4 May 2022
+v0.21 13 Dec 2024
 
 
-A very simple, very PIO IDE disc driver for Acorn's RISC iX operating system.  It's a present for RISC iX 1.21's 30th birthday which happens to be right about now.  :-)
+A very simple, very PIO IDE disc driver for Acorn's RISC iX operating system.  RISC iX 1.21's 30th birthday coincided with the first release.  :-)
 
 Using this driver, an Acorn Archimedes can boot RISC iX from a regular IDE disc instead of a grim old ST-506 disc, or a SCSI disc that has to be attached only one particular (and expensive) Acorn SCSI card.  In theory (currently untested O:-) ) this unlocks use of CompactFlash storage and some very reasonable modern-day IDE card products.
 
@@ -53,16 +53,21 @@ Filesystem            kbytes    used   avail capacity  Mounted on
 /dev/id0a             372302  119963  215108    36%    /
 ~~~
 
+### IDE interfaces supported
 
-### Features
+   - The "Ian Stocks ZIDEFS podule" (16-bit and 8-bit A30x0 versions)
+   - Castle 16-bit IDE podule _in principle_ (but doesn't work yet -- see ecide1 in the dmesg above!)
+   - HCCS A3000 IDE card (with thanks to Richard Halkyard)
+   - HCCS Ultimate 8-bit IDE card (ditto)
+
+
+### Other features
 
    - Supports 16-bit PIO accesses to both LBA and non-LBA/CHS drives
-   - Supports the "Ian Stocks ZIDEFS podule" (16-bit and 8-bit A30x0 versions), and Castle 16-bit IDE podule
-   - Supports RISC iX sections embedded in any of the ZIDEFS partition (one RISC iX partition table per physical drive)
-   - Supports the Castle 16-bit IDE podule _in principle_ (but doesn't work yet -- see ecide1 in the dmesg above!)
    - Easily extensible to support other interfaces
    - Supports the ST-506/ADFS/non-SCSI RISCiX partitioning scheme, so interacts well with an ADFS slice of the drive
      - You can use up to 512MB of a drive for RISC OS, the bootloader, etc., and use the rest for RISC iX.
+   - For ZIDEFS interfaces, supports RISC iX sections embedded in any of the ZIDEFS partitions (but up to one RISC iX partition table per physical drive)
 
 
 ### Issues/FIXME/Todo
@@ -71,7 +76,6 @@ Filesystem            kbytes    used   avail capacity  Mounted on
 
    - Interrupts!  Well, on cards that support them.  RISC OS doesn't get much benefit from IRQs, but RISC iX spends a lot of system time on polled transfers which could be spent elsewhere.
    - Support more IDE podules (e.g. Castle 8-bit A30x0)
-   - Support the 8-bit/A30x0 versions of Ian Stocks IDE and Castle IDE podules
    - Support A5000/A4000/A3020 native/82c711 IDE
    - Support character device access
 
@@ -170,6 +174,7 @@ The following command boots the kernel, instructing it to mount partition 0 on t
 
 Note the slight inconsistency:  we lie to RISCiXFS saying it's an ST-506 drive (really an ADFS IDE drive substituted for this), but tell the kernel the truth.  The kernel matches "id" to the `ecide` driver.
 
+(PS: RISC iX does some weird video/VIDC-enhancer probing on startup, which goes haywire with `Sync` configured to `Auto`.  Add a `*configure Sync 0` or similar to your setup.)
 
 ## RISCiXFS patching for other filesystems
 
